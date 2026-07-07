@@ -1,0 +1,157 @@
+brands:
+
+  gtib:
+    display_name: GTIB / M&A Advisory
+    namespace: gtib
+
+    aliases:
+      - gtib
+      - m&a
+      - mergers
+      - acquisitions
+      - founder exit
+      - business sale
+
+    reader_segment:
+      - Founder-led Technology Companies
+      - Telecom Companies
+      - IT Services
+      - SaaS Companies
+      - AI Companies
+
+    tone: Serious, Strategic, Founder-focused
+
+    pain_points:
+      - Exit Readiness
+      - Founder Dependency
+      - Buyer Confidence
+      - Strategic Value
+
+    keyword_direction:
+      - Technology M&A Advisor
+      - Sell-side M&A Advisor
+      - Founder Exit Planning
+      - Lower Middle Market M&A
+
+    cta: Schedule an Advisory Call
+
+
+  kinvo:
+    display_name: Kinvo Care
+    namespace: kinvo
+
+    aliases:
+      - kinvo
+      - nanny
+      - babysitter
+      - childcare
+
+    reader_segment:
+      - Premium Families
+      - Working Parents
+      - NRI Families
+
+    tone: Warm, Premium, Family-sensitive
+
+    pain_points:
+      - Verified Caregiver
+      - Trust
+      - Replacement
+      - Accountability
+
+    keyword_direction:
+      - Nanny Service Gurgaon
+      - Verified Nanny Delhi NCR
+      - Premium Nanny Service
+
+    cta: Book a Consultation
+
+
+  mpm:
+    display_name: MPM NRI Properties
+    namespace: mpm
+
+    aliases:
+      - mpm
+      - property
+      - nri property
+      - real estate
+
+    reader_segment:
+      - NRIs
+      - Property Investors
+
+    tone: Trust-first, Professional
+
+    pain_points:
+      - Documentation
+      - Property Verification
+      - Rental Support
+
+    keyword_direction:
+      - NRI Property Gurgaon
+      - NRI Property Management
+      - NRI Real Estate Delhi NCR
+
+    cta: Contact Property Advisor
+
+
+  futuristix:
+    display_name: Futuristix / Agentic AI
+    namespace: futuristix
+
+    aliases:
+      - futuristix
+      - ai automation
+      - ai agents
+      - workflow automation
+      - agentic ai
+
+    reader_segment:
+      - SMBs
+      - Startup Founders
+      - Operations Teams
+
+    tone: Practical, ROI-driven
+
+    pain_points:
+      - Lead Leakage
+      - Manual Workflows
+      - AI ROI
+
+    keyword_direction:
+      - AI Automation
+      - AI Workflow Automation
+      - Agentic AI Consulting
+
+    cta: Book an AI Discovery Call
+
+
+  gcb:
+    display_name: GCB Services
+    namespace: gcb
+
+    aliases:
+      - gcb
+      - telecom
+      - wireless
+      - 5g
+      - network deployment
+
+    reader_segment:
+      - Telecom Operators
+      - Engineering Partners
+
+    tone: Engineering-led, Reliable
+
+    pain_points:
+      - Field Execution
+      - Project Accountability
+      - Network Deployment
+
+    keyword_direction:
+      - Wireless Telecom Infrastructure
+      - Telecom Infrastructure Services
+      - 5G Network Deployment
+
+    cta: Contact Our Engineering Team
