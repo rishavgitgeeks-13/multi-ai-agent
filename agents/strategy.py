@@ -8,9 +8,10 @@ Responsibilities:
     1. Run SEOService      → ranked keywords, search intent, meta fields
     2. Run HashtagService  → platform-optimised hashtag list
     3. Run CitationService → formatted citations from research sources
-    4. Assemble the strategy dict consumed by the Writer Agent
-    5. Persist service outputs to the shared state
-    6. Route the workflow to the Writer Agent
+    4. Generate content outline
+    5. Assemble the strategy dict consumed by the Writer Agent
+    6. Persist service outputs to the shared state
+    7. Route the workflow to the Writer Agent
 
 The Strategy Agent does not generate content.
 """
@@ -21,16 +22,18 @@ from schemas.state import ContentState
 from services.citation import CitationService
 from services.hashtags import HashtagService
 from services.seo_service import SEOService
+from services.writer_service import WriterService
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Service instances (module-level singletons — created once, reused per call)
+# Service instances (module-level singletons)
 # ---------------------------------------------------------------------------
 
 seo_service = SEOService()
 hashtag_service = HashtagService()
 citation_service = CitationService()
+writer_service = WriterService()
 
 
 # ---------------------------------------------------------------------------
@@ -38,13 +41,17 @@ citation_service = CitationService()
 # ---------------------------------------------------------------------------
 
 def strategy_node(state: ContentState) -> ContentState:
-    """Run all strategy services and assemble the strategy for the Writer Agent."""
-    logger.info("strategy_node() | query=%s…", state["user_input"][:80])
+    """Run all strategy services and assemble the strategy."""
+
+    logger.info(
+        "strategy_node() | query=%s…",
+        state["user_input"][:80],
+    )
 
     user_input = state["user_input"]
     research = state["research_data"]
     brand = state["brand_context"]
-    platform = state.get("platform", "linkedin")
+    platform = state.get("platform", "website")
     content_type = state.get("content_type", "article")
     language = state.get("language", "English")
 
@@ -57,15 +64,24 @@ def strategy_node(state: ContentState) -> ContentState:
             research_data=research,
             brand_context=brand,
         )
+
         logger.info(
             "SEOService done | primary_keywords=%d | intent=%s",
             len(seo_blueprint.get("primary_keywords", [])),
             seo_blueprint.get("search_intent", ""),
         )
+
     except Exception as exc:
-        logger.error("SEOService failed: %s — using empty blueprint", exc)
+        logger.error(
+            "SEOService failed: %s — using empty blueprint",
+            exc,
+        )
+
         seo_blueprint = {
-            "primary_keywords": brand.get("keyword_direction", []),
+            "primary_keywords": brand.get(
+                "keyword_direction",
+                [],
+            ),
             "secondary_keywords": [],
             "keyword_scores": [],
             "search_intent": "Informational",
@@ -85,9 +101,17 @@ def strategy_node(state: ContentState) -> ContentState:
             seo_blueprint=seo_blueprint,
             platform=platform,
         )
-        logger.info("HashtagService done | hashtags=%d", len(hashtags))
+
+        logger.info(
+            "HashtagService done | hashtags=%d",
+            len(hashtags),
+        )
+
     except Exception as exc:
-        logger.error("HashtagService failed: %s — using empty list", exc)
+        logger.error(
+            "HashtagService failed: %s — using empty list",
+            exc,
+        )
         hashtags = []
 
     # ------------------------------------------------------------------
@@ -98,45 +122,125 @@ def strategy_node(state: ContentState) -> ContentState:
             research_data=research,
             user_input=user_input,
         )
-        logger.info("CitationService done | citations=%d", len(citations))
+
+        logger.info(
+            "CitationService done | citations=%d",
+            len(citations),
+        )
+
     except Exception as exc:
-        logger.error("CitationService failed: %s — using empty list", exc)
+        logger.error(
+            "CitationService failed: %s — using empty list",
+            exc,
+        )
         citations = []
 
     # ------------------------------------------------------------------
-    # 4 — Assemble strategy dict
+    # 4 — Generate Outline
+    # ------------------------------------------------------------------
+    try:
+        outline = writer_service.generate_outline(
+            user_input=user_input,
+            strategy={
+                "keywords": seo_blueprint.get(
+                    "primary_keywords",
+                    [],
+                ),
+                "audience": brand.get(
+                    "reader_segment",
+                    [],
+                ),
+                "tone": brand.get(
+                    "tone",
+                    "",
+                ),
+                "cta": brand.get(
+                    "cta",
+                    "",
+                ),
+                "pain_points": brand.get(
+                    "pain_points",
+                    [],
+                ),
+            },
+            brand_context=brand,
+            content_type=content_type,
+        )
+
+        logger.info(
+            "Outline generated | sections=%d",
+            len(outline.sections),
+        )
+
+        outline_data = [
+            {
+                "heading": section.heading,
+                "heading_level": section.heading_level,
+                "brief": section.brief,
+                "keywords": section.keywords,
+            }
+            for section in outline.sections
+        ]
+
+    except Exception as exc:
+        logger.error(
+            "Outline generation failed: %s",
+            exc,
+        )
+        outline_data = []
+
+    # ------------------------------------------------------------------
+    # 5 — Assemble strategy dict
     # ------------------------------------------------------------------
     strategy = {
         # Core content plan
         "title": seo_blueprint.get("meta_title") or "",
         "content_angle": "",
-        "audience": brand.get("reader_segment", []),
-        "tone": brand.get("tone", ""),
-        "outline": [],
-        "cta": brand.get("cta", ""),
+        "audience": brand.get(
+            "reader_segment",
+            [],
+        ),
+        "tone": brand.get(
+            "tone",
+            "",
+        ),
+        "outline": outline_data,
+        "cta": brand.get(
+            "cta",
+            "",
+        ),
 
         # Request metadata
         "content_type": content_type,
         "platform": platform,
         "language": language,
 
-        # Keyword strategy (from SEO service)
-        "keywords": seo_blueprint.get("primary_keywords", []),
-        "secondary_keywords": seo_blueprint.get("secondary_keywords", []),
-        "pain_points": brand.get("pain_points", []),
+        # Keyword strategy
+        "keywords": seo_blueprint.get(
+            "primary_keywords",
+            [],
+        ),
+        "secondary_keywords": seo_blueprint.get(
+            "secondary_keywords",
+            [],
+        ),
+        "pain_points": brand.get(
+            "pain_points",
+            [],
+        ),
 
-        # Full SEO blueprint (consumed by Formatter + JSONBuilder)
+        # SEO
         "seo": seo_blueprint,
 
-        # Hashtags (consumed by JSONBuilder)
+        # Hashtags
         "hashtags": hashtags,
 
-        # Citations (consumed by Writer + JSONBuilder)
+        # Citations
         "citations": citations,
     }
 
     # ------------------------------------------------------------------
-    # 5 — Persist to shared state
+    # 6 — Persist to state
     # ------------------------------------------------------------------
     state["strategy"] = strategy
     state["seo"] = seo_blueprint
@@ -146,4 +250,5 @@ def strategy_node(state: ContentState) -> ContentState:
     state["next_agent"] = "writer"
 
     logger.info("strategy_node() complete")
+
     return state

@@ -57,7 +57,7 @@ WORD_COUNT_TARGETS: Dict[str, int] = {
 _MAX_STATS_PER_SECTION = 3
 _MAX_CITATIONS_GLOBAL = 5
 # Words from the previous section tail passed for narrative continuity
-_CONTINUITY_TAIL_WORDS = 150
+_CONTINUITY_TAIL_WORDS = 50
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +168,12 @@ class WriterService:
             content_type,
             len(draft.split()),
         )
+        
+        logger.info(
+            "Draft generated:\n%s",
+            draft[:3000]
+        )
+
         return draft
 
     # ------------------------------------------------------------------
@@ -206,7 +212,7 @@ class WriterService:
             return self._parse_strategy_outline(strategy, brand_context)
 
         logger.info("Strategy outline empty — generating via LLM")
-        return self._generate_outline_via_llm(
+        return self._generate_outline(
             user_input=user_input,
             strategy=strategy,
             brand_context=brand_context,
@@ -252,7 +258,7 @@ class WriterService:
             sections=sections,
         )
 
-    def _generate_outline_via_llm(
+    def _generate_outline(
         self,
         user_input: str,
         strategy: Dict,
@@ -415,7 +421,11 @@ Rules:
         """Format up to n stats for injection into a section prompt."""
         selected = research_ctx.get("stats", [])[:n]
         if not selected:
-            return "No specific stats available — use credible domain knowledge."
+            return (
+                "No statistics are available.\n"
+                "Do NOT invent percentages, benchmarks, revenue figures, "
+                "survey data, or numerical claims."
+            )
         return "\n".join(f"- {s}" for s in selected)
 
     # ------------------------------------------------------------------
@@ -526,11 +536,12 @@ RESEARCH STATS TO DRAW FROM:
 
 Requirements:
 - Start with {'##' if section.heading_level == 2 else '###'} {section.heading}
-- 200–350 words
+- 150-200 words
 - Add H3 subheadings if the section covers multiple distinct points
 - Naturally include 1–2 of the target keywords
 - Use bullet points or numbered lists where they improve clarity
-- Include at least one concrete example, stat, or data point if available
+- Include a statistic ONLY if it exists in the research context.
+- Never invent percentages, benchmarks, or financial figures.
 - End with a sentence that transitions naturally toward the next topic
 - No filler openers ("In this section…", "Now let's look at…")
 - Tone: {outline.tone}

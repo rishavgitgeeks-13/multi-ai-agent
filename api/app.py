@@ -159,7 +159,7 @@ async def list_brands() -> BrandsResponse:
                 cta=b.get("cta", ""),
                 namespace=b.get("namespace", ""),
             )
-            for b in all_brands
+            for b in all_brands.values()
         ]
     except Exception as exc:
         logger.warning("Could not load brands: %s — returning empty list", exc)

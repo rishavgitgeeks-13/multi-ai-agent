@@ -34,7 +34,8 @@ def manager_node(state: ContentState) -> ContentState:
 
     # Load the appropriate brand configuration for this request.
     state["brand_context"] = business_context_service.resolve(
-        state["user_input"]
+        user_input=state["user_input"],
+        brand=state.get("brand"),
     )
 
     # Initialize workflow tracking.

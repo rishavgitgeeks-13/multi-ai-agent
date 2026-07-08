@@ -268,11 +268,13 @@ def display_result(result: Dict, workflow_type: str) -> None:
             st.divider()
             col1, col2 = st.columns([1, 4])
             col1.download_button(
-                "⬇️ Download .md",
-                data=markdown,
-                file_name="content.md",
-                mime="text/markdown",
-            )
+                label="📥 Download Markdown",
+                    data=markdown,
+                    file_name=f"{workflow_type}.md",
+                    mime="text/markdown",
+                    key=f"download_markdown_{workflow_type}_{hash(markdown)}",
+                )
+
             col2.code(markdown[:300] + "…" if len(markdown) > 300 else markdown, language="markdown")
         else:
             st.info("No content in final_output. Check the API logs.")

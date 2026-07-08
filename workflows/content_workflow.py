@@ -113,6 +113,7 @@ class ContentWorkflow:
             request_id=request_id,
             session_id=session_id,
             user_input=resolved_input,
+            brand=brand,
             content_type=content_type,
             platform="website",
             objective=objective,
@@ -168,6 +169,7 @@ class ContentWorkflow:
         request_id: str,
         session_id: str,
         user_input: str,
+        brand: Optional[str],
         content_type: str,
         platform: str,
         objective: str,
@@ -182,6 +184,7 @@ class ContentWorkflow:
             # Request
             "user_input": user_input,
             "content_type": content_type,
+            "brand": brand,
             "platform": platform,
             "objective": objective,
             "language": language,

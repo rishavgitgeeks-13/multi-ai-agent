@@ -45,6 +45,9 @@ class ContentState(TypedDict):
     user_input: str
     """Raw text entered by the user (topic, question, or brief)."""
 
+    brand: str | None
+    """Brand selected by the user. None means auto-detect."""
+
     content_type: str
     """article | blog | linkedin | email | carousel"""
 
@@ -214,7 +217,7 @@ class ContentState(TypedDict):
 
     max_revision_count: int
     """
-    Hard cap on rewrites (default: settings.MAX_REVIEW_ITERATIONS = 3).
+    Hard cap on rewrites (default: settings.MAX_REVIEW_ITERATIONS = 0).
     When revision_count >= max_revision_count, Review Agent forces PASS.
     """
 

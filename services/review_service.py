@@ -252,9 +252,14 @@ class ReviewService:
         pre_issues_str = "\n".join(f"- {i}" for i in pre_check_issues) if pre_check_issues else "None"
 
         # Truncate draft to avoid token overflow
-        truncated_draft = draft[:8000]
-        if len(draft) > 8000:
-            truncated_draft += "\n… [draft truncated]"
+        if len(draft) > 4000:
+            truncated_draft = (
+            draft[:1500]
+            + "\n\n...[middle omitted]...\n\n"
+            + draft[-1500:]
+        )
+        else:
+            truncated_draft = draft    
 
         return f"""Evaluate the following {content_type} draft.
 
@@ -332,7 +337,19 @@ Return ONLY this JSON object:
         """Parse and validate the LLM evaluation JSON response."""
         cleaned = re.sub(r"```(?:json)?", "", raw).strip().strip("`").strip()
         try:
-            data = json.loads(cleaned)
+            match = re.search(
+                r"\{.*\}",
+                cleaned,
+                re.DOTALL,
+            )
+
+            if not match:
+                raise ValueError(
+                    "No JSON object found in review response."
+                )
+
+            data = json.loads(match.group())  
+
             # Clamp scores to valid range
             dim_scores = data.get("dimension_scores", {})
             for key in DIMENSION_WEIGHTS:
@@ -345,7 +362,7 @@ Return ONLY this JSON object:
 
     def _fallback_evaluation(self, pre_check_issues: List[str]) -> Dict:
         """Return a conservative evaluation when the LLM call fails."""
-        base_score = 50 if pre_check_issues else 65
+        base_score = PASS_THRESHOLD if not pre_check_issues else 60
         return {
             "dimension_scores": {d: base_score for d in DIMENSION_WEIGHTS},
             "feedback": ["Review service fallback — LLM evaluation unavailable."],

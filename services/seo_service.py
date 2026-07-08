@@ -94,7 +94,7 @@ _MAX_CORPUS_CHARS: int = 12_000
 # Number of keywords per intent-classification batch (reduces LLM round-trips).
 _INTENT_BATCH_SIZE: int = 20
 
-DEFAULT_LLM_MODEL: str = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5")
+DEFAULT_LLM_MODEL: str = settings.ANTHROPIC_MODEL
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +151,9 @@ class SEOService:
             
         self._model = model
         self._temperature = temperature
-        self._anthropic = Anthropic()       # reads ANTHROPIC_API_KEY from env
+        self._anthropic = Anthropic(      # reads ANTHROPIC_API_KEY from env
+             api_key=settings.ANTHROPIC_API_KEY
+        )
         logger.info(
             "SEOService ready | llm_model=%s | embedding_model=%s",
             model,
@@ -269,7 +271,19 @@ class SEOService:
                 ),
                 user=prompt,
             )
-            return self._parse_keyword_response(raw)
+
+            logger.info(
+                "Keyword extraction raw response:\n%s",
+                raw[:3000],
+
+            )
+            candidates = self._parse_keyword_response(raw)
+
+            logger.info(
+                "Parsed keyword candidates: %d",
+                len(candidates),
+            )
+            return candidates
         except Exception as exc:
             logger.error("Keyword extraction LLM call failed: %s", exc)
             return []
@@ -329,27 +343,58 @@ Rules:
 
     def _parse_keyword_response(self, raw: str) -> List[KeywordCandidate]:
         """Parse the LLM JSON response into a deduplicated KeywordCandidate list."""
-        # Strip markdown code fences that some models add despite instructions.
-        cleaned = re.sub(r"```(?:json)?", "", raw).strip().strip("`").strip()
 
         try:
+            start = raw.find("[")
+            end = raw.rfind("]")
+
+            if start == -1 or end == -1:
+                logger.error(
+                    "No JSON array found in response:\\%s",
+                    raw[:1000],
+                )
+                return []
+
+            cleaned = raw[start:end + 1]
             items = json.loads(cleaned)
-        except json.JSONDecodeError as exc:
-            logger.error("Keyword JSON parse error: %s | raw_head=%s", exc, cleaned[:300])
+
+        except Exception as exc:
+            logger.error(
+                "Keyword JSON parse failed: %s\\nRaw:\\n%s",
+                exc,
+                raw[:1000],
+            )
             return []
 
         candidates: List[KeywordCandidate] = []
-        seen: set = set()
+        seen = set()
 
         for item in items:
             if not isinstance(item, dict):
                 continue
-            keyword = str(item.get("keyword", "")).strip().lower()
-            category = str(item.get("category", "secondary")).strip().lower()
-            if not keyword or keyword in seen:
+
+            keyword = str(
+                item.get("keyword", "")
+            ).strip().lower()
+
+            category = str(
+                item.get("category", "secondary")
+            ).strip().lower()
+
+            if not keyword:
                 continue
+
+            if keyword in seen:
+                continue
+
             seen.add(keyword)
-            candidates.append(KeywordCandidate(keyword=keyword, category=category))
+
+            candidates.append(
+                KeywordCandidate(
+                    keyword=keyword,
+                    category=category,
+                )
+            )
 
         return candidates
 

@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     MAX_REVIEW_ITERATIONS: int = 3
     MAX_RESEARCH_RESULTS: int = 10
     DEFAULT_TEMPERATURE: float = 0.2
-    MAX_TOKENS: int = 4096
+    MAX_TOKENS: int = 8192
 
     # ==========================================================
     # Content Configuration
