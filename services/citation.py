@@ -35,7 +35,6 @@ import re
 from typing import Dict, List, Optional
 
 from anthropic import Anthropic
-
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -54,10 +53,22 @@ class CitationService:
     """Extracts and formats citations from the research package."""
 
     def __init__(self) -> None:
-        self._anthropic = Anthropic()
+        if not settings.ANTHROPIC_API_KEY:
+            raise ValueError(
+                "ANTHROPIC_API_KEY is not configured."
+            )
+
+        self._anthropic = Anthropic(
+            api_key=settings.ANTHROPIC_API_KEY
+        )
+
         self._model = settings.ANTHROPIC_MODEL
-        self._temperature = 0.0   # citations need determinism
-        logger.info("CitationService ready | model=%s", self._model)
+        self._temperature = 0.0  # citations need deterministic output
+
+        logger.info(
+            "CitationService ready | model=%s",
+            self._model,
+        )
 
     # ------------------------------------------------------------------
     # Public entry point

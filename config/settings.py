@@ -2,8 +2,8 @@
 Centralized application configuration.
 
 - Loads environment variables from .env
-- Provides a single Settings instance throughout the project
-- Prevents hardcoding secrets and configuration
+- Provides a singleton Settings object
+- Keeps secrets and deployment config outside the codebase
 """
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -18,82 +18,73 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
 
     # ==========================================================
-    # Anthropic
+    # LLM Providers
     # ==========================================================
-    ANTHROPIC_API_KEY: str = "ANTHROPIC_API_KEY"
+    OPENAI_API_KEY: str
+    OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
+    OPENAI_EMBEDDING_DIMENSION: int = 1536
+
+    ANTHROPIC_API_KEY: str | None = None
     ANTHROPIC_MODEL: str = "claude-sonnet-4-6"
 
     # ==========================================================
-    # MongoDB
+    # Vector Database
     # ==========================================================
-    MONGODB_URI: str = "mongodb+srv://n8n_authentication:Rishav@gitgeeks25@cluster0.9v4ydlw.mongodb.net/?appName=Cluster0"
+    PINECONE_API_KEY: str | None = None
+    PINECONE_INDEX_NAME: str = "multi-agent"
+    PINECONE_EMBEDDING_DIMENSION: int = 1536
+
+    # ==========================================================
+    # Research APIs (Optional)
+    # ==========================================================
+    TAVILY_API_KEY: str | None = None
+    TAVILY_MAX_RESULTS: int = 5
+
+    NEWS_API_KEY: str | None = None
+    NEWS_PAGE_SIZE: int = 5
+
+    YOUTUBE_API_KEY: str | None = None
+    YOUTUBE_MAX_RESULTS: int = 5
+
+    # ==========================================================
+    # Reddit (Optional)
+    # ==========================================================
+    REDDIT_CLIENT_ID: str | None = None
+    REDDIT_CLIENT_SECRET: str | None = None
+    REDDIT_USERNAME: str | None = None
+    REDDIT_PASSWORD: str | None = None
+    REDDIT_USER_AGENT: str | None = None
+
+    # ==========================================================
+    # Database
+    # ==========================================================
+    MONGODB_URI: str | None = None
     MONGODB_DATABASE: str = "editorial_ai"
 
     # ==========================================================
-    # OpenAI  (embeddings for SEO pipeline + Pinecone vector store)
-    # ==========================================================
-    OPENAI_API_KEY: str = ""
-    OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
-    OPENAI_EMBEDDING_DIMENSION: int = 1536    # text-embedding-3-small default
-
-    # ==========================================================
-    # Pinecone
-    # ==========================================================
-    PINECONE_API_KEY: str = ""
-    PINECONE_INDEX_NAME: str = "multi-agent"
-    PINECONE_EMBEDDING_DIMENSION: int = 1536  # must match OPENAI_EMBEDDING_DIMENSION
-
-    # ==========================================================
-    # Tavily
-    # ==========================================================
-    TAVILY_API_KEY: str = "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"
-
-    # ==========================================================
-    # LangSmith (Optional but Recommended)
+    # LangSmith (Optional)
     # ==========================================================
     LANGCHAIN_API_KEY: str | None = None
     LANGCHAIN_TRACING_V2: bool = False
     LANGCHAIN_PROJECT: str = "Editorial-Agent"
 
     # ==========================================================
-    # LLM Configuration
-    # ==========================================================
-    DEFAULT_TEMPERATURE: float = 0.2
-    MAX_TOKENS: int = 4096
-
-    # ==========================================================
     # Agent Configuration
     # ==========================================================
     MAX_REVIEW_ITERATIONS: int = 3
     MAX_RESEARCH_RESULTS: int = 10
+    DEFAULT_TEMPERATURE: float = 0.2
+    MAX_TOKENS: int = 4096
 
     # ==========================================================
     # Content Configuration
     # ==========================================================
     DEFAULT_LANGUAGE: str = "English"
-    MAX_ARTICLE_WORDS: int = 2500
     MIN_ARTICLE_WORDS: int = 1200
+    MAX_ARTICLE_WORDS: int = 2500
 
     # ==========================================================
-    # News Configuration
-    # ==========================================================
-    NEWS_API_KEY: str
-    NEWS_PAGE_SIZE: int = 5
-
-    YOUTUBE_API_KEY: str
-    YOUTUBE_MAX_RESULTS: int = 5
-
-    TAVILY_API_KEY: str
-    TAVILY_MAX_RESULTS: int = 5
-    
-
-    # ==========================================================
-    # Prompt Configuration
-    # ==========================================================
-    SYSTEM_PROMPT_VERSION: str = "v1"
-
-    # ==========================================================
-    # Pydantic Settings
+    # Environment file configuration
     # ==========================================================
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -103,5 +94,4 @@ class Settings(BaseSettings):
     )
 
 
-# Singleton instance
 settings = Settings()

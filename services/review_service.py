@@ -39,7 +39,6 @@ import re
 from typing import Dict, List, Tuple
 
 from anthropic import Anthropic
-
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -59,10 +58,25 @@ class ReviewService:
     """Evaluates content quality and returns a structured review decision."""
 
     def __init__(self) -> None:
-        self._anthropic = Anthropic()
+        # Ensure Claude credentials are available
+        if not settings.ANTHROPIC_API_KEY:
+            raise ValueError(
+                "ANTHROPIC_API_KEY is not configured."
+            )
+
+        # Create authenticated Anthropic client
+        self._anthropic = Anthropic(
+            api_key=settings.ANTHROPIC_API_KEY
+        )
+
+        # Review configuration
         self._model = settings.ANTHROPIC_MODEL
-        self._temperature = 0.0     # reviews must be deterministic
-        logger.info("ReviewService ready | model=%s", self._model)
+        self._temperature = 0.0  # deterministic reviews
+
+        logger.info(
+            "ReviewService ready | model=%s",
+            self._model,
+        )
 
     # ------------------------------------------------------------------
     # Public entry point

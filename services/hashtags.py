@@ -30,7 +30,6 @@ import re
 from typing import Dict, List, Optional
 
 from anthropic import Anthropic
-
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -56,10 +55,22 @@ class HashtagService:
     """Generates a ranked, platform-optimised hashtag list."""
 
     def __init__(self) -> None:
-        self._anthropic = Anthropic()
+        if not settings.ANTHROPIC_API_KEY:
+            raise ValueError(
+                "ANTHROPIC_API_KEY is not configured."
+            )
+
+        self._anthropic = Anthropic(
+            api_key=settings.ANTHROPIC_API_KEY
+        )
+
         self._model = settings.ANTHROPIC_MODEL
         self._temperature = settings.DEFAULT_TEMPERATURE
-        logger.info("HashtagService ready | model=%s", self._model)
+
+        logger.info(
+            "HashtagService ready | model=%s",
+            self._model,
+        )
 
     # ------------------------------------------------------------------
     # Public entry point

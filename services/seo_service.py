@@ -54,6 +54,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 from models.embeddings import embedding_provider
+from config.settings import settings
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -143,6 +144,11 @@ class SEOService:
         model: str = DEFAULT_LLM_MODEL,
         temperature: float = 0.0,
     ) -> None:
+        if not settings.ANTHROPIC_API_KEY:
+            raise ValueError(
+                "ANTHROPIC_API_KEY is not configured."
+            )
+            
         self._model = model
         self._temperature = temperature
         self._anthropic = Anthropic()       # reads ANTHROPIC_API_KEY from env

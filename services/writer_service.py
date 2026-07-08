@@ -33,8 +33,8 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from anthropic import Anthropic
-
 from config.settings import settings
+
 
 logger = logging.getLogger(__name__)
 
@@ -96,11 +96,25 @@ class WriterService:
     """Produces the full-length Markdown draft from the strategy package."""
 
     def __init__(self) -> None:
-        self._anthropic = Anthropic()
+        # Fail fast if Claude credentials are missing.
+        if not settings.ANTHROPIC_API_KEY:
+            raise ValueError(
+                "ANTHROPIC_API_KEY is not configured."
+            )
+
+        # Authenticated Anthropic client.
+        self._anthropic = Anthropic(
+            api_key=settings.ANTHROPIC_API_KEY
+        )
+
         self._model = settings.ANTHROPIC_MODEL
         self._temperature = settings.DEFAULT_TEMPERATURE
         self._max_tokens = settings.MAX_TOKENS
-        logger.info("WriterService ready | model=%s", self._model)
+
+        logger.info(
+            "WriterService ready | model=%s",
+            self._model,
+        )
 
     # ------------------------------------------------------------------
     # Public entry point
