@@ -295,9 +295,14 @@ FORMAT REQUIREMENTS:
 - Keyword density target: 1–2% for primary, 0.5–1% for secondary.
 
 ### Factual grounding
-- Use at least **2 statistics** from `research_data["statistics"]` in long-form content.
+- Use at least 2 statistics from `research_data["statistics"]` in long-form content.
 - Attribute every statistic: "According to McKinsey (2024)…" or "(McKinsey, 2024)".
-- Never fabricate statistics. If no supporting data is available, use credible domain knowledge with appropriate hedging ("Industry observers note…").
+- Never fabricate statistics.
+- If `research_data["statistics"]` is empty, do not invent numbers or percentages.
+- Instead, use credible domain knowledge with appropriate hedging:
+  - "Industry observers note..."
+  - "Several studies suggest..."
+  - "Research indicates..."
 
 ### Brand alignment
 - **Tone**: match the brand's tone exactly throughout.

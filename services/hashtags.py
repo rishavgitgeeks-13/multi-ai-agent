@@ -146,7 +146,7 @@ class HashtagService:
                 seen.add(normalised)
                 unique.append(k)
 
-        return unique[:20]   # cap seeds to keep prompt concise
+        return unique[:12]   # cap seeds to keep prompt concise
 
     # ------------------------------------------------------------------
     # Step 2 — LLM hashtag generation
@@ -226,10 +226,16 @@ PLATFORM NOTES  : {platform_notes}
 
 Generate exactly {cap} hashtags, ranked by relevance (most relevant first).
 
-Mix the following categories:
-  - Industry/topic hashtags  (directly about the subject)
-  - Audience hashtags        (who the content is for)
-  - Trending/broad hashtags  (widely followed, high reach)
+Generate hashtags using this distribution:
+
+- 3 Trending/Broad hashtags
+- 4 Niche/Industry hashtags
+- 3 Long-tail/Intent hashtags
+
+Prioritise:
+1. Relevance to the content topic.
+2. Search intent.
+3. Audience fit.
 
 Rules:
   - CamelCase for readability: #AIMarketing not #aimarketing

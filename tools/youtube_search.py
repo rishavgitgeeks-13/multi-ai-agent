@@ -70,6 +70,13 @@ class YouTubeSearch:
                 video_id = item["id"]["videoId"]
 
                 transcript = self._get_transcript(video_id)
+                MAX_TRANSCRIPT_CHARS = 4000
+                transcript = transcript[:MAX_TRANSCRIPT_CHARS]
+                print(
+                    f"[YouTubeSearch] "
+                    f"{video_id} "
+                    f"transcript_length={len(transcript)}"
+                )
 
                 videos.append(
                     {
@@ -91,7 +98,10 @@ class YouTubeSearch:
 
             return []
 
-    def _get_transcript(self, video_id: str) -> str:
+    def _get_transcript(
+        self,
+        video_id: str
+    ) -> str:
         """
         Download transcript for a video.
 
@@ -99,14 +109,27 @@ class YouTubeSearch:
         """
 
         try:
+            ytt_api = YouTubeTranscriptApi()
 
-            transcript = YouTubeTranscriptApi.get_transcript(video_id)
+            try:
+                transcript = ytt_api.fetch(
+                    video_id,
+                    languages=["en", "hi"]
+                )
+            except Exception:
+                transcript = ytt_api.fetch(
+                    video_id
+                )
 
             return " ".join(
-                segment["text"]
+                segment.text
                 for segment in transcript
             )
 
-        except Exception:
-
+        except Exception as exc:
+            print(
+                f"[YouTubeTranscript] "
+                f"video_id={video_id} "
+                f"error={type(exc).__name__}: {exc}"
+            )
             return ""

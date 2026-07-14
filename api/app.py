@@ -29,6 +29,7 @@ from typing import Any, Dict
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from api.routes.generate import router as generate_router
 
 from config.settings import settings
 
@@ -115,6 +116,7 @@ app.include_router(content_router, prefix="/api")
 app.include_router(email_router, prefix="/api")
 app.include_router(seo_router, prefix="/api")
 app.include_router(social_router, prefix="/api")
+app.include_router(generate_router, prefix="/api",)
 
 
 # ==========================================================================
@@ -176,3 +178,4 @@ async def list_brands() -> BrandsResponse:
 @app.get("/", include_in_schema=False)
 async def root():
     return {"message": f"{settings.APP_NAME} is running. Visit /docs for the API reference."}
+

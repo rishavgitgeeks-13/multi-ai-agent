@@ -31,6 +31,7 @@ from typing import List
 
 import numpy as np
 from openai import OpenAI
+from functools import lru_cache
 
 from config.settings import settings
 
@@ -90,16 +91,35 @@ class EmbeddingProvider:
         )
         return self._l2_normalize(vectors)
 
-    def embed_one(self, text: str) -> np.ndarray:
-        """
-        Embed a single string.
+    @lru_cache(maxsize=1000)
+    def _cached_embed_one(
+        self,
+        text: str,
+    ) -> tuple:
+        response = self._client.embeddings.create(
+            input=[text],
+            model=settings.OPENAI_EMBEDDING_MODEL,
+        )
 
-        Returns
-        -------
-        np.ndarray  shape (OPENAI_EMBEDDING_DIMENSION,)
-            Unit-length vector.
-        """
-        return self.embed([text])[0]
+        vector = np.array(
+            response.data[0].embedding,
+            dtype=float,
+        )
+
+        vector = self._l2_normalize(
+            vector.reshape(1, -1)
+        )[0]
+
+        return tuple(vector)
+    
+    def embed_one(
+        self,
+        text: str,
+    ) -> np.ndarray:
+        return np.array(
+            self._cached_embed_one(text),
+            dtype=float,
+        )
 
     # ------------------------------------------------------------------
     # Similarity helpers

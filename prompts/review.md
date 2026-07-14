@@ -61,7 +61,7 @@ Pre-check issues are passed to the LLM evaluation prompt so the LLM does **not**
 
 ---
 
-### Phase 2 — LLM Evaluation (five dimensions)
+### Phase 2 — LLM Evaluation (six dimensions)
 
 #### Evaluation Prompt Template
 
@@ -87,7 +87,7 @@ CTA                   : {{strategy.cta}}
 === SCORING RUBRIC ===
 Score each dimension 0–100:
 
-content_quality (weight 25%)
+content_quality (weight 20%)
   90–100: Exceptional depth, clear structure, compelling narrative, well-supported claims
   70–89 : Good coverage with minor gaps in depth or clarity
   50–69 : Adequate but thin — lacks examples, data, or original insight
@@ -105,26 +105,33 @@ brand_alignment (weight 20%)
   50–69 : Some misalignment — wrong register, wrong audience assumptions
   0–49  : Wrong tone, wrong audience, pain points not addressed at all
 
-structure (weight 20%)
+structure (weight 15%)
   90–100: Clear intro → body → conclusion, logical flow, strong heading hierarchy
   70–89 : Good structure with minor flow or transition issues
   50–69 : Structure present but transitions are weak or sections feel disconnected
   0–49  : Missing intro or conclusion, no logical progression, poor heading hierarchy
 
-cta_effectiveness (weight 10%)
+cta_effectiveness (weight 5%)
   90–100: CTA is specific, action-oriented, and perfectly matched to search intent
   70–89 : CTA is present but could be stronger, more specific, or better placed
   50–69 : Weak or vague CTA — generic "contact us" or buried at the end
   0–49  : No CTA, or CTA is misaligned with the content's search intent
 
+factual_grounding (weight 15%)
+  90–100: Claims are supported by research, statistics are attributed, no hallucinations.
+  70–89 : Most claims are supported with minor gaps in attribution.
+  50–69 : Some unsupported statements or vague statistics.
+  0–49  : Major claims are unverified, unsupported, or potentially hallucinated.  
+
 === TASK ===
 Return ONLY this JSON object:
 {
   "dimension_scores": {
-    "content_quality"  : <int 0-100>,
-    "seo_compliance"   : <int 0-100>,
-    "brand_alignment"  : <int 0-100>,
-    "structure"        : <int 0-100>,
+    "content_quality": <int 0-100>,
+    "seo_compliance": <int 0-100>,
+    "brand_alignment": <int 0-100>,
+    "structure": <int 0-100>,
+    "factual_grounding": <int 0-100>,
     "cta_effectiveness": <int 0-100>
   },
   "feedback": [
@@ -135,7 +142,7 @@ Return ONLY this JSON object:
     "<specific problem NOT already listed in pre-check issues>",
     "<specific problem>"
   ],
-  "rewrite_instruction": "<If score < 70: one focused paragraph of actionable revision guidance for the Writer Agent. If score >= 70: empty string.>"
+  "rewrite_instruction": "<If score < 75: one focused paragraph of actionable revision guidance for the Writer Agent. If score >= 70: empty string.>"
 }
 ```
 
@@ -145,22 +152,23 @@ Return ONLY this JSON object:
 
 ```
 weighted_score = (
-    content_quality   × 0.25 +
+    content_quality   × 0.20 +
     seo_compliance    × 0.25 +
     brand_alignment   × 0.20 +
-    structure         × 0.20 +
-    cta_effectiveness × 0.10
+    structure         × 0.15 +
+    factual_grounding × 0.15 +
+    cta_effectiveness × 0.05
 )
 
 final_score = round(weighted_score)
 ```
 
-**PASS threshold: score ≥ 70**
+**PASS threshold: score ≥ 75**
 
 | Score | Status | Action |
 |---|---|---|
-| 70–100 | PASS | Route to END — `workflow_status = "COMPLETED"` |
-| 0–69 | FAIL | Route to Writer — inject `rewrite_instruction` into strategy |
+| 75–100 | PASS | Route to END — `workflow_status = "COMPLETED"` |
+| 0–74 | FAIL | Route to Writer — inject `rewrite_instruction` into strategy |
 
 ---
 
@@ -200,6 +208,8 @@ The Review Agent returns a dict valid against `ReviewResult` schema:
 The `rewrite_instruction` is the most important field on a FAIL. It tells the Writer **exactly** what to fix on the next pass.
 
 ### Rules for a good rewrite instruction
+- **Maximum 150 words.
+- **The rewrite instruction must be concise and under 150 words.
 - **One coherent paragraph** (not a bullet list — the Writer's system prompt receives this inline).
 - **Lead with the highest-impact fix** — the dimension with the lowest score.
 - **Name specific sections** — "In the 'ROI Measurement' section, replace the generic advice with a real case study or quantified example."
@@ -309,6 +319,16 @@ Measures narrative flow, heading hierarchy, and logical progression.
 - ❌ Missing introduction or conclusion
 - ❌ H3 used before H2
 
+### factual_grounding
+Measures factual accuracy and grounding in research.
+
+- ✅ Statistics are attributed to sources.
+- ✅ Claims are supported by evidence.
+- ✅ Examples match the research package.
+- ❌ Unsupported numbers or claims.
+- ❌ Hallucinated examples.
+- ❌ Statements presented as facts without evidence.
+
 ### cta_effectiveness
 Measures CTA clarity, placement, and intent alignment.
 - ✅ CTA appears in the conclusion as a standalone sentence or line
@@ -317,6 +337,7 @@ Measures CTA clarity, placement, and intent alignment.
 - ❌ CTA buried inside a paragraph
 - ❌ Vague CTA ("contact us for more information")
 - ❌ CTA misaligned with intent (transactional CTA in an informational piece)
+
 
 ---
 

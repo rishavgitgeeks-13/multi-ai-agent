@@ -21,7 +21,13 @@ class RedditSearch:
     SEARCH_URL = "https://www.reddit.com/search.json"
 
     HEADERS = {
-        "User-Agent": "EditorialAI/1.0"
+        "User-Agent": (
+            "Mozilla/5.0 "
+            "(Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 "
+            "(KHTML, like Gecko) "
+            "Chrome/138.0 Safari/537.36"
+        )
     }
 
     def search(
@@ -39,11 +45,26 @@ class RedditSearch:
 
         try:
 
+            print(
+                f"[RedditSearch] "
+                f"Searching Reddit for: {query}"
+            )
+
             response = requests.get(
                 self.SEARCH_URL,
                 headers=self.HEADERS,
                 params=params,
                 timeout=20
+            )
+
+            print(
+                f"[RedditSearch] "
+                f"Status: {response.status_code}"
+            )
+
+            print(
+                f"[RedditSearch] "
+                f"URL: {response.url}"
             )
 
             response.raise_for_status()
@@ -56,7 +77,10 @@ class RedditSearch:
 
                 post = child["data"]
 
-                permalink = "https://reddit.com" + post["permalink"]
+                permalink = (
+                    "https://reddit.com"
+                    + post["permalink"]
+                )
 
                 comments = self._fetch_comments(
                     permalink + ".json",
@@ -91,6 +115,11 @@ class RedditSearch:
 
                 })
 
+            print(
+                f"[RedditSearch] "
+                f"Returned {len(results)} posts"
+            )
+
             return results
 
         except Exception as e:
@@ -111,6 +140,11 @@ class RedditSearch:
                 url,
                 headers=self.HEADERS,
                 timeout=20
+            )
+
+            print(
+                f"[RedditComments] "
+                f"Status: {response.status_code}"
             )
 
             response.raise_for_status()
@@ -138,7 +172,11 @@ class RedditSearch:
 
             return comments
 
-        except Exception:
+        except Exception as e:
+
+            print(
+                f"[RedditComments] {e}"
+            )
 
             return []
 
@@ -149,7 +187,9 @@ class RedditSearch:
 
         images = []
 
-        url = post.get("url_overridden_by_dest")
+        url = post.get(
+            "url_overridden_by_dest"
+        )
 
         if url:
 
@@ -176,10 +216,14 @@ class RedditSearch:
         if not media:
             return None
 
-        reddit_video = media.get("reddit_video")
+        reddit_video = media.get(
+            "reddit_video"
+        )
 
         if reddit_video:
-            return reddit_video.get("fallback_url")
+            return reddit_video.get(
+                "fallback_url"
+            )
 
         return None
 
@@ -190,4 +234,7 @@ class RedditSearch:
 
         pattern = r"https?://[^\s]+"
 
-        return re.findall(pattern, text)
+        return re.findall(
+            pattern,
+            text
+        )

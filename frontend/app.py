@@ -372,9 +372,103 @@ st.divider()
 # Workflow tabs
 # ==========================================================================
 
-tab_content, tab_email, tab_seo, tab_social = st.tabs(
-    ["📄 Content", "✉️ Email", "🔍 SEO", "📱 Social"]
+tab_auto, tab_content, tab_email, tab_seo, tab_social = st.tabs(
+    ["🚀 Auto", "📄 Content", "✉️ Email", "🔍 SEO", "📱 Social"]
 )
+
+
+# ---------------------------------------------------------------------------
+# TAB 0 — Auto
+# ---------------------------------------------------------------------------
+
+with tab_auto:
+    st.subheader("Auto Generate")
+    st.caption(
+        "Automatically detects whether the request is for content, email, social, or SEO."
+    )
+
+    with st.form("auto_form"):
+        a_user_input = st.text_area(
+            "Prompt *",
+            placeholder="Write a blog on AI workflow automation, create a LinkedIn post, generate an email campaign, or perform SEO analysis.",
+            height=120,
+        )
+
+        col1, col2 = st.columns(2)
+
+        a_brand = col1.selectbox(
+            "Brand",
+            brand_names,
+            key="a_brand",
+        )
+
+        a_language = col2.selectbox(
+            "Language",
+            ["English", "Hindi"],
+            key="a_lang",
+        )
+
+        a_instructions = st.text_input(
+            "Additional Instructions (optional)",
+            key="a_instr",
+        )
+
+        a_max_rev = st.slider(
+            "Max Revisions",
+            1,
+            5,
+            3,
+            key="a_rev",
+        )
+
+        a_submitted = st.form_submit_button(
+            "Generate",
+            use_container_width=True,
+            type="primary",
+        )
+
+    if a_submitted:
+        if not a_user_input.strip():
+            st.error("Please enter a prompt.")
+        else:
+            brand_val = None if a_brand == "Auto-detect" else a_brand
+
+            payload = {
+                "user_input": a_user_input,
+                "brand": brand_val,
+                "language": a_language,
+                "additional_instructions": a_instructions,
+                "session_id": st.session_state.session_id,
+                "max_revisions": a_max_rev,
+            }
+
+            with st.spinner(
+                "Auto-detecting workflow and generating content..."
+            ):
+                result = call_api(
+                    "generate",
+                    payload,
+                )
+
+            st.session_state.results["auto"] = result
+
+    if "auto" in st.session_state.results:
+        workflow = (
+            st.session_state.results["auto"]
+            .get("metadata", {})
+            .get("workflow")
+        )
+
+        if workflow:
+            st.success(
+                f"Detected workflow: {workflow.title()}"
+            )
+
+        st.divider()
+        display_result(
+            st.session_state.results["auto"],
+            "content",
+        )
 
 
 # ---------------------------------------------------------------------------

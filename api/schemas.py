@@ -118,6 +118,14 @@ class ReviewSummary(BaseModel):
     issues: List[str] = []
     dimension_scores: Dict[str, Any] = {}
 
+class GenerateRequest(BaseModel):
+    user_input: str = Field(..., min_length=3)
+    brand: Optional[str] = None
+    language: str = "English"
+    additional_instructions: str = ""
+    session_id: Optional[str] = None
+    max_revisions: int = Field(3, ge=1, le=5)    
+
 
 class WorkflowResult(BaseModel):
     """Base response returned by all workflow endpoints."""
@@ -137,6 +145,9 @@ class WorkflowResult(BaseModel):
 
 class ContentResult(WorkflowResult):
     """Response from POST /api/generate/content"""
+    pass
+
+class GenerateResult(WorkflowResult):
     pass
 
 

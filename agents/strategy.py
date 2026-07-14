@@ -139,7 +139,7 @@ def strategy_node(state: ContentState) -> ContentState:
     # 4 — Generate Outline
     # ------------------------------------------------------------------
     try:
-        outline = writer_service.generate_outline(
+        outline = writer_service._generate_outline(
             user_input=user_input,
             strategy={
                 "keywords": seo_blueprint.get(

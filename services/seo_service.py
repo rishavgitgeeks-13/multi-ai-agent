@@ -80,10 +80,10 @@ INTENT_SCORE_MAP: Dict[str, float] = {
 
 # Weighted contribution of each scoring dimension to the final score.
 SCORE_WEIGHTS: Dict[str, float] = {
-    "semantic_similarity": 0.30,
+    "semantic_similarity": 0.40,
     "tfidf": 0.20,
-    "bm25": 0.20,
-    "pain_point": 0.15,
+    "bm25": 0.15,
+    "pain_point": 0.10,
     "search_intent": 0.10,
     "brand_relevance": 0.05,
 }
@@ -174,7 +174,10 @@ class SEOService:
         logger.info("SEOService.run() | query=%s…", user_input[:80])
 
         # Step 1 — corpus
-        corpus, documents = self._prepare_corpus(research_data)
+        corpus, documents = self._prepare_corpus(
+            research_data,
+            user_input,
+        )
 
         # Step 2 — candidate keywords via LLM
         candidates = self._extract_candidate_keywords(corpus, user_input, brand_context)
@@ -197,6 +200,7 @@ class SEOService:
 
         # Step 10 — rank
         ranked = self._rank_keywords(candidates)
+        ranked = ranked[:20]
 
         # Step 11 — build blueprint
         blueprint = self._build_blueprint(ranked, user_input, brand_context)
@@ -211,7 +215,11 @@ class SEOService:
     # Step 1 — Corpus preparation
     # ------------------------------------------------------------------
 
-    def _prepare_corpus(self, research_data: Dict) -> Tuple[str, List[str]]:
+    def _prepare_corpus(
+        self,
+        research_data: Dict,
+        user_input: str,
+    ) -> Tuple[str, List[str]]:
         """
         Extract a flat document list and a single merged corpus string.
 
@@ -244,7 +252,24 @@ class SEOService:
             if isinstance(cite, str) and cite.strip():
                 documents.append(cite.strip())
 
+        seen = set()
+        unique_docs = []
+
+        for doc in documents:
+            key = doc[:500].lower().strip()
+            if key not in seen:
+                seen.add(key)
+                unique_docs.append(doc)
+
+        documents = unique_docs       
+
+        documents = self._rank_documents_by_similarity(
+            documents,
+            user_input,
+        )
+
         corpus = "\n\n".join(documents)
+
         logger.debug(
             "Corpus: %d chars across %d documents", len(corpus), len(documents)
         )
@@ -318,8 +343,14 @@ RESEARCH CORPUS:
 
 ---
 
-Extract 30–60 keywords that are strongly relevant to the user query and brand context.
-Include a diverse mix of all five categories below.
+Extract 15–25 highly relevant keywords that are strongly relevant to the user query and brand context.
+Prioritize quality over quantity.
+Target distribution:
+- primary: 3-5 keywords
+- secondary: 5-7 keywords
+- long_tail: 3-5 keywords
+- industry: 2-4 keywords
+- technical: 2-4 keywords
 
 Return a JSON array — each object MUST follow this schema exactly:
 {{
@@ -700,7 +731,7 @@ No prose. No markdown.
             c.keyword
             for c in ranked
             if c.category in ("secondary", "long_tail")
-        ][:10]
+        ][:5]
 
         # Dominant intent = most frequent intent label among the top-10 keywords.
         top_intents = [c.search_intent for c in ranked[:10] if c.search_intent]
@@ -811,6 +842,50 @@ Return ONLY this JSON object — no prose, no markdown:
             messages=[{"role": "user", "content": user}],
         )
         return response.content[0].text
+    
+    def _rank_documents_by_similarity(
+        self,
+        documents: List[str],
+        user_input: str,
+    ) -> List[str]:
+        """
+        Rank research documents by semantic similarity to the user query and
+        keep only the most relevant ones to reduce token usage.
+        """
+        if len(documents) <= 10:
+            return documents
+
+        try:
+            doc_embs = self._embed(documents)
+            query_emb = self._embed([user_input])
+
+            scores = (doc_embs @ query_emb.T).flatten()
+
+            ranked = sorted(
+                zip(documents, scores),
+                key=lambda x: x[1],
+                reverse=True,
+            )
+
+            top_docs = [
+                doc
+                for doc, _ in ranked[:10]
+            ]
+
+            logger.info(
+                "Semantic document ranking: %d -> %d documents",
+                len(documents),
+                len(top_docs),
+            )
+
+            return top_docs
+
+        except Exception as exc:
+            logger.warning(
+                "Document semantic ranking failed: %s",
+                exc,
+            )
+            return documents
 
     def _embed(self, texts: List[str]) -> np.ndarray:
         """

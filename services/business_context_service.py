@@ -8,7 +8,8 @@ which business/brand the user's request belongs to.
 Responsibilities:
 - Load brand configurations.
 - Match user input against brand aliases.
-- Return the matching brand configuration.
+- Detect workflow intent (content, email, social, seo).
+- Return the matching brand configuration and workflow context.
 
 This service does NOT use LLMs or perform any research.
 """
@@ -32,6 +33,160 @@ class BusinessContextService:
 
         with open(config_path, "r", encoding="utf-8") as file:
             self.brand_configs = yaml.safe_load(file)["brands"]
+
+    def _detect_workflow(
+        self,
+        user_input: str,
+    ) -> Dict:
+        """
+        Detect the workflow type and related metadata.
+
+        Returns
+        -------
+        {
+            "workflow": "...",
+            "content_type": "...",
+            "platform": "...",
+            "campaign_type": "...",
+            "objective": "..."
+        }
+        """
+
+        text = (user_input or "").lower()
+
+        # --------------------------------------------------
+        # Social
+        # --------------------------------------------------
+        if any(
+            x in text
+            for x in [
+                "linkedin",
+                "twitter",
+                "tweet",
+                "x post",
+                "social post",
+                "social media",
+                "carousel",
+                "instagram",
+                "facebook post",
+                "thread",
+            ]
+        ):
+            platform = "linkedin"
+
+            if any(
+                x in text
+                for x in [
+                    "twitter",
+                    "tweet",
+                    "x post",
+                    "thread",
+                ]
+            ):
+                platform = "x"
+
+            elif "carousel" in text:
+                platform = "carousel"
+
+            return {
+                "workflow": "social",
+                "content_type": None,
+                "platform": platform,
+                "campaign_type": None,
+                "objective": "engagement",
+            }
+
+        # --------------------------------------------------
+        # Email
+        # --------------------------------------------------
+        if any(
+            x in text
+            for x in [
+                "email",
+                "newsletter",
+                "cold email",
+                "mail",
+                "email campaign",
+                "drip campaign",
+                "promotional email",
+            ]
+        ):
+            campaign_type = "promotional"
+
+            if "newsletter" in text:
+                campaign_type = "newsletter"
+
+            elif "transactional" in text:
+                campaign_type = "transactional"
+
+            elif "nurture" in text:
+                campaign_type = "nurture"
+
+            return {
+                "workflow": "email",
+                "content_type": None,
+                "platform": None,
+                "campaign_type": campaign_type,
+                "objective": "leads",
+            }
+
+        # --------------------------------------------------
+        # SEO
+        # --------------------------------------------------
+        if any(
+            x in text
+            for x in [
+                "seo analysis",
+                "keyword research",
+                "search intent",
+                "meta description",
+                "seo strategy",
+                "seo audit",
+                "keywords for",
+                "ranking keywords",
+            ]
+        ):
+            return {
+                "workflow": "seo",
+                "content_type": "article",
+                "platform": None,
+                "campaign_type": None,
+                "objective": "seo",
+            }
+
+        # --------------------------------------------------
+        # Default: Content
+        # --------------------------------------------------
+        content_type = "article"
+
+        if "blog" in text:
+            content_type = "blog"
+
+        return {
+            "workflow": "content",
+            "content_type": content_type,
+            "platform": None,
+            "campaign_type": None,
+            "objective": "seo",
+        }
+
+    def _build_context(
+        self,
+        cfg: Dict,
+        user_input: str,
+    ) -> Dict:
+        """
+        Build final context payload.
+        """
+
+        workflow_context = self._detect_workflow(
+            user_input
+        )
+
+        return {
+            "brand_config": cfg,
+            **workflow_context,
+        }
 
     def resolve(
         self,
@@ -74,7 +229,10 @@ class BusinessContextService:
                     or brand == display_name
                     or brand in aliases
                 ):
-                    return cfg
+                    return self._build_context(
+                        cfg,
+                        user_input,
+                    )
 
         # --------------------------------------------------
         # Auto detect from prompt
@@ -88,9 +246,15 @@ class BusinessContextService:
                 alias.lower() in user_input
                 for alias in aliases
             ):
-                return cfg
+                return self._build_context(
+                    cfg,
+                    user_input,
+                )
 
         # --------------------------------------------------
         # Fallback brand
         # --------------------------------------------------
-        return self.brand_configs["futuristix"]
+        return self._build_context(
+            self.brand_configs["futuristix"],
+            user_input,
+        )

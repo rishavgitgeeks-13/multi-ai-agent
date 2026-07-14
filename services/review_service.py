@@ -43,14 +43,15 @@ from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
-PASS_THRESHOLD = 70
+PASS_THRESHOLD = 75
 
 DIMENSION_WEIGHTS: Dict[str, float] = {
-    "content_quality": 0.25,
+    "content_quality": 0.20,
     "seo_compliance": 0.25,
     "brand_alignment": 0.20,
-    "structure": 0.20,
-    "cta_effectiveness": 0.10,
+    "structure": 0.15,
+    "factual_grounding": 0.15,
+    "cta_effectiveness": 0.05,
 }
 
 
@@ -201,7 +202,7 @@ class ReviewService:
         pre_check_issues: List[str],
     ) -> Dict:
         """
-        Run a single Anthropic call that scores all five dimensions
+        Run a single Anthropic call that scores all six dimensions
         and produces actionable feedback.
         """
         prompt = self._build_evaluation_prompt(
@@ -255,7 +256,7 @@ class ReviewService:
         if len(draft) > 4000:
             truncated_draft = (
             draft[:1500]
-            + "\n\n...[middle omitted]...\n\n"
+            + "\n\n[section removed to fit context window]\n\n"
             + draft[-1500:]
         )
         else:
@@ -305,6 +306,12 @@ structure (weight 20%)
   50–69 : Structure present but transitions are weak
   0–49  : Poor structure — missing intro or conclusion, no logical progression
 
+factual_grounding (weight 15%)
+  90–100: Claims are supported by research, statistics are attributed, and there are no hallucinations
+  70–89 : Most claims are supported with minor attribution gaps
+  50–69 : Some unsupported statements or vague statistics
+  0–49  : Major claims are unsupported or potentially hallucinated  
+
 cta_effectiveness (weight 10%)
   90–100: Clear, specific, action-oriented CTA aligned with search intent
   70–89 : CTA present but could be stronger or more specific
@@ -329,7 +336,7 @@ Return ONLY this JSON object:
     "<specific problem not already listed in pre-check issues>",
     "<specific problem>"
   ],
-  "rewrite_instruction": "<If score < 70: one specific paragraph of actionable revision guidance for the Writer Agent. If score >= 70: empty string.>"
+  "rewrite_instruction": "<If score < 75: one concise paragraph (maximum 150 words) of actionable revision guidance for the Writer Agent. If score >= 75: empty string.>"
 }}
 """
 
