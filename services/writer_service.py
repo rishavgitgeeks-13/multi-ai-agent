@@ -127,6 +127,8 @@ class WriterService:
         strategy: Dict,
         brand_context: Dict,
         previous_draft: str = "",
+        primary_topic: str = "",
+        additional_instructions: str = "",
     ) -> str:
         """Generate and return the full Markdown content draft."""
         logger.info("WriterService.run() | query=%s…", user_input[:80])
@@ -148,6 +150,8 @@ class WriterService:
         research_ctx = self._build_research_context(research_data)
         rewrite_instruction = str(strategy.get("rewrite_instruction", "")).strip()
         primary_keywords, secondary_keywords = self._resolve_seo_keywords(strategy)
+        target_words = self._resolve_target_words(content_type, strategy)
+        topic_lock = (primary_topic or strategy.get("primary_topic") or user_input or "").strip()
 
         # On revision: surgically edit the existing draft instead of regenerating.
         if rewrite_instruction and previous_draft.strip() and content_type in LONG_FORM_TYPES:
@@ -169,6 +173,9 @@ class WriterService:
                 rewrite_instruction=rewrite_instruction,
                 primary_keywords=primary_keywords,
                 secondary_keywords=secondary_keywords,
+                target_words=target_words,
+                primary_topic=topic_lock,
+                additional_instructions=additional_instructions,
             )
         else:
             draft = self._write_long_form(
@@ -178,10 +185,13 @@ class WriterService:
                 rewrite_instruction=rewrite_instruction,
                 primary_keywords=primary_keywords,
                 secondary_keywords=secondary_keywords,
+                target_words=target_words,
+                primary_topic=topic_lock,
+                additional_instructions=additional_instructions,
             )
 
         # Deterministic quality boost: ensure attributed research stats are present.
-        if content_type in LONG_FORM_TYPES:
+        if content_type in LONG_FORM_TYPES and target_words >= 400:
             draft = self._enrich_factual_grounding(
                 draft=draft,
                 research_ctx=research_ctx,
@@ -190,17 +200,31 @@ class WriterService:
             )
 
         logger.info(
-            "WriterService complete | content_type=%s | words=%d",
+            "WriterService complete | content_type=%s | words=%d | target=%s",
             content_type,
             len(draft.split()),
+            target_words,
         )
-        
+
         logger.info(
             "Draft generated:\n%s",
             draft[:3000]
         )
 
         return draft
+
+    @staticmethod
+    def _resolve_target_words(content_type: str, strategy: Dict) -> int:
+        """Prefer user-requested word count; else content-type default."""
+        user_target = strategy.get("target_word_count")
+        if user_target is not None:
+            try:
+                n = int(user_target)
+                if 1 <= n <= 50000:
+                    return n
+            except (TypeError, ValueError):
+                pass
+        return WORD_COUNT_TARGETS.get(content_type, 1800)
 
     # ------------------------------------------------------------------
     # Step 1 — Content type resolution
@@ -479,9 +503,13 @@ Rules:
         rewrite_instruction: str = "",
         primary_keywords: Optional[List[str]] = None,
         secondary_keywords: Optional[List[str]] = None,
+        target_words: Optional[int] = None,
+        primary_topic: str = "",
+        additional_instructions: str = "",
     ) -> str:
         """Write the full long-form piece in a single LLM call (token-efficient)."""
-        target_words = WORD_COUNT_TARGETS.get(content_type, 1800)
+        if target_words is None:
+            target_words = WORD_COUNT_TARGETS.get(content_type, 1800)
         primary = [str(k) for k in (primary_keywords or []) if str(k).strip()][:2]
         secondary = [str(k) for k in (secondary_keywords or []) if str(k).strip()][:6]
         primary_str = ", ".join(primary) or "none"
@@ -512,14 +540,32 @@ Mandatory fixes for this revision (do not skip):
 - Write currency as "USD 500" / "USD 1,000" — never use the $ character.
 """
 
+        topic_block = ""
+        if primary_topic:
+            topic_block = f"""
+PRIMARY TOPIC LOCK (mandatory — do not change meaning, roles, or subject):
+{primary_topic}
+"""
+
+        extra_block = ""
+        if additional_instructions.strip():
+            extra_block = f"\nADDITIONAL USER INSTRUCTIONS:\n{additional_instructions.strip()}\n"
+
+        # Micro / short long-form when user asks for very few words
+        length_rules = (
+            f"TARGET LENGTH   : ~{target_words} words — hit this length closely"
+            if target_words < 400
+            else f"TARGET LENGTH   : ~{target_words} words"
+        )
+
         prompt = f"""Write a complete {content_type} in Markdown.
-{revision_block}
+{revision_block}{topic_block}{extra_block}
 TITLE           : {outline.title}
 CONTENT ANGLE   : {outline.content_angle}
 AUDIENCE        : {outline.audience}
 TONE            : {outline.tone}
 CTA (use verbatim): {outline.cta}
-TARGET LENGTH   : ~{target_words} words
+{length_rules}
 PRIMARY KEYWORDS: {primary_str}
 SECONDARY KEYWORDS: {secondary_str}
 
@@ -541,12 +587,13 @@ SEO placement rules (mandatory):
 - At least one `##` heading should contain a primary or secondary keyword
 
 Content rules:
-- Write a hook-driven introduction (100–150 words, no heading under the H1)
-- Cover every outline section as `##` headings (150–250 words each)
+- Stay strictly on the PRIMARY TOPIC LOCK — never invert victims/roles or change the subject
+- Write a hook-driven introduction (100–150 words, no heading under the H1) unless target length is under 400 words — then keep intro proportional
+- Cover every outline section as `##` headings (scale section length to hit ~{target_words} words total)
 - Complete every sentence — never stop mid-word or mid-sentence
 - End with `## Conclusion` that recaps and closes with the exact CTA: {outline.cta}
 - Prefer CTA wording like "Book an AI Discovery Call" style specificity — do not use vague "reach out today"
-- When RESEARCH STATS lists any items, embed at least 3 attributed statistics in the article body
+- When RESEARCH STATS lists any items and target length >= 400, embed at least 3 attributed statistics in the article body
   (intro or early body, one mid-article, one in proof/closing). Format: "According to <Source>: <figure>…"
 - When a proof / case-study / real-world section appears in the outline, ground it with research stats or named citations above — do not use brand name alone as proof
 - Never invent percentages, benchmarks, financial figures, organisation names, or report titles
@@ -558,10 +605,11 @@ Content rules:
 Write the complete {content_type}:
 """
         # 8192 avoids mid-article truncation for ~1800–2200 word pieces
+        max_tok = 2048 if target_words < 400 else 8192
         return self._call_llm(
-            system=self._system_prompt(outline, rewrite_instruction),
+            system=self._system_prompt(outline, rewrite_instruction, primary_topic),
             user=prompt,
-            max_tokens=8192,
+            max_tokens=max_tok,
         )
 
     def _revise_long_form(
@@ -844,21 +892,37 @@ Write the conclusion:
         rewrite_instruction: str = "",
         primary_keywords: Optional[List[str]] = None,
         secondary_keywords: Optional[List[str]] = None,
+        target_words: Optional[int] = None,
+        primary_topic: str = "",
+        additional_instructions: str = "",
     ) -> str:
         """Write the entire short-form piece in a single LLM call."""
-        target_words = WORD_COUNT_TARGETS.get(content_type, 600)
+        if target_words is None:
+            target_words = WORD_COUNT_TARGETS.get(content_type, 600)
         format_rules = self._format_rules(content_type, platform)
         primary = [str(k) for k in (primary_keywords or []) if str(k).strip()][:2]
         secondary = [str(k) for k in (secondary_keywords or []) if str(k).strip()][:4]
 
-        prompt = f"""Write a complete {content_type} for {platform}.
+        topic_block = ""
+        if primary_topic:
+            topic_block = (
+                f"\nPRIMARY TOPIC LOCK (do not change meaning/roles):\n{primary_topic}\n"
+            )
+        extra_block = ""
+        if additional_instructions.strip():
+            extra_block = f"\nADDITIONAL USER INSTRUCTIONS:\n{additional_instructions.strip()}\n"
+        rewrite_block = ""
+        if rewrite_instruction.strip():
+            rewrite_block = f"\nREVISION NOTES:\n{rewrite_instruction.strip()}\n"
 
+        prompt = f"""Write a complete {content_type} for {platform}.
+{topic_block}{extra_block}{rewrite_block}
 TITLE / TOPIC   : {outline.title}
 CONTENT ANGLE   : {outline.content_angle}
 AUDIENCE        : {outline.audience}
 TONE            : {outline.tone}
 CTA             : {outline.cta}
-TARGET LENGTH   : ~{target_words} words
+TARGET LENGTH   : ~{target_words} words — adhere closely to this length
 PRIMARY KEYWORDS: {", ".join(primary) or "none"}
 SECONDARY KEYWORDS: {", ".join(secondary) or "none"}
 
@@ -875,13 +939,15 @@ SEO notes:
 - Include the first primary keyword early and naturally
 - Weave 1–2 secondary keywords only if they fit the platform tone
 - Do not keyword-stuff
+- Stay strictly on the primary topic; never divert or invert roles
 
 Write the complete {content_type}:
 """
+        max_tok = 512 if target_words <= 50 else 2048
         return self._call_llm(
-            system=self._system_prompt(outline, rewrite_instruction),
+            system=self._system_prompt(outline, rewrite_instruction, primary_topic),
             user=prompt,
-            max_tokens=2048,
+            max_tokens=max_tok,
         )
 
     # ------------------------------------------------------------------
@@ -910,14 +976,19 @@ Write the complete {content_type}:
         self,
         outline: ContentOutline,
         rewrite_instruction: str = "",
+        primary_topic: str = "",
     ) -> str:
         """Shared system prompt that frames the LLM as a focused writer."""
         base = (
             f"You are an expert content writer specialising in {outline.tone.lower()} writing "
             f"for {outline.audience}. "
             "You follow formatting instructions exactly, never add meta-commentary, "
-            "and return only the requested content — no preamble, no sign-off."
+            "and return only the requested content — no preamble, no sign-off. "
+            "Never invent abusive, discriminatory, or illegal how-to content. "
+            "Never divert from the user's primary topic or invert roles/meaning."
         )
+        if primary_topic:
+            base += f"\n\nPRIMARY TOPIC LOCK:\n{primary_topic}"
         if rewrite_instruction:
             base += (
                 f"\n\nREVISION INSTRUCTIONS FROM EDITOR:\n{rewrite_instruction}\n"
