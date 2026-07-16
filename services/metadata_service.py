@@ -89,6 +89,7 @@ class MetadataService:
             "language": str(strategy.get("language", "English")),
             "word_count": word_count,
             "reading_time_minutes": reading_time,
+            "read_time_min": reading_time,  # alias used by UI / state contract
             "paragraph_count": paragraphs,
             "heading_count": len(headings),
             "headings": headings,
