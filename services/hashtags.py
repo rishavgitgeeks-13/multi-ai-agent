@@ -16,11 +16,10 @@ Output: List[str]   e.g. ["#AIMarketing", "#ContentAutomation", "#SaaSGrowth"]
 
 Pipeline:
     1. Build seed keywords from SEO blueprint + brand keyword direction
-    2. Call LLM to generate platform-specific, categorised hashtag candidates
-    3. Parse and deduplicate the LLM response
-    4. Apply platform limits and return the final list
+    2. Convert seeds to hashtags via rule-based formatting (no LLM)
+    3. Deduplicate, apply platform limits, and return
 
-This service performs one LLM call and is otherwise stateless.
+This service is entirely rule-based — no LLM calls.
 """
 
 import json
@@ -97,14 +96,7 @@ class HashtagService:
         cap = max_hashtags or PLATFORM_LIMITS.get(platform_key, DEFAULT_LIMIT)
         seed_keywords = self._build_seed_keywords(seo_blueprint, brand_context)
 
-        raw_hashtags = self._generate_via_llm(
-            user_input=user_input,
-            seed_keywords=seed_keywords,
-            brand_context=brand_context,
-            seo_blueprint=seo_blueprint,
-            platform=platform_key,
-            cap=cap,
-        )
+        raw_hashtags = self._fallback_hashtags(seed_keywords, cap)
 
         final = self._deduplicate_and_cap(raw_hashtags, cap)
         logger.info("HashtagService complete | platform=%s | count=%d", platform_key, len(final))
@@ -283,7 +275,7 @@ Return ONLY this JSON object:
     # ------------------------------------------------------------------
 
     def _fallback_hashtags(self, seed_keywords: List[str], cap: int) -> List[str]:
-        """Convert seed keywords into hashtags when LLM call fails."""
+        """Convert seed keywords into CamelCase hashtags."""
         tags: List[str] = []
         for kw in seed_keywords:
             tag = "#" + re.sub(r"[^a-zA-Z0-9]", "", kw.title().replace(" ", ""))
