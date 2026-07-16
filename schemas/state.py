@@ -11,12 +11,13 @@ Rules
 
 Field ownership
 ---------------
-  Manager   → brand_context, workflow_status (INIT → RUNNING),
+  Manager   → brand_context, primary_topic, user_constraints, safety,
+               workflow_status (INIT → RUNNING | BLOCKED),
                current_agent, next_agent
   Research  → research_data, retrieved_documents, sources
   Strategy  → strategy, seo, hashtags
   Writer    → draft, metadata, formatted_output, final_output
-  Review    → review, revision_count, workflow_status (→ COMPLETED)
+  Review    → review, revision_count, workflow_status (→ COMPLETED | BLOCKED)
 """
 
 from typing import Any, Dict, List, TypedDict
@@ -62,6 +63,35 @@ class ContentState(TypedDict):
 
     additional_instructions: str
     """Optional free-text modifier appended to writer prompts."""
+
+    primary_topic: str
+    """
+    Locked topic summary from the Manager safety gate.
+    Downstream agents must follow this and must not invert meaning/roles.
+    """
+
+    user_constraints: Dict[str, Any]
+    """
+    Parsed user constraints from Manager. Shape:
+    {
+        "target_word_count": int | None,
+        "word_count_flexible": bool,
+        "raw_length_mentions": List[int],
+    }
+    """
+
+    safety: Dict[str, Any]
+    """
+    Policy decision from SafetyService. Shape:
+    {
+        "allowed": bool,
+        "blocked": bool,
+        "category": str,
+        "reason": str,
+        "message": str,
+        "defensive_allow": bool,
+    }
+    """
 
     # ==========================================================================
     # Business Context  (Manager Agent + BusinessContextService)
@@ -232,6 +262,7 @@ class ContentState(TypedDict):
     INIT       — state created, not yet entered graph
     RUNNING    — graph is executing
     COMPLETED  — review passed, final_output is ready
+    BLOCKED    — safety/policy refused; no content may be returned
     FAILED     — unrecoverable error occurred
     """
 
