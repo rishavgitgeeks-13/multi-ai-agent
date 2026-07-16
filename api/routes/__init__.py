@@ -29,6 +29,9 @@ def _normalise(result: Dict[str, Any]) -> Dict[str, Any]:
         "metadata": result.get("metadata") or {},
         "final_output": result.get("final_output") or {},
         "errors": result.get("errors") or [],
+        "safety": result.get("safety") or {},
+        "primary_topic": result.get("primary_topic") or "",
+        "user_constraints": result.get("user_constraints") or {},
         # Workflow-specific extras (ignored by models that don't declare them)
         "email_meta": result.get("email_meta") or {},
         "seo_analysis": result.get("seo_analysis") or {},
