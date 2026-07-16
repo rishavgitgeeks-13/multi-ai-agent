@@ -33,12 +33,18 @@ json_builder = JSONBuilder()
 def writer_node(state: ContentState) -> ContentState:
     """Generate content from the strategy blueprint."""
 
-    # Generate the first draft.
+    strategy = state["strategy"]
+    previous_draft = ""
+    if str(strategy.get("rewrite_instruction", "")).strip():
+        previous_draft = state.get("draft") or ""
+
+    # Generate the first draft (or surgically revise on FAIL → rewrite).
     draft = writer_service.run(
         user_input=state["user_input"],
         research_data=state["research_data"],
-        strategy=state["strategy"],
+        strategy=strategy,
         brand_context=state["brand_context"],
+        previous_draft=previous_draft,
     )
 
     # Generate metadata.
