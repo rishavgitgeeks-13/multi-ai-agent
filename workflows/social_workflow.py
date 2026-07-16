@@ -321,10 +321,14 @@ class SocialWorkflow:
             "session_id": session_id,
             "user_input": user_input,
             "content_type": content_type,
+            "brand": None,
             "platform": platform,
             "objective": objective,
             "language": language,
             "additional_instructions": additional_instructions,
+            "primary_topic": "",
+            "user_constraints": {},
+            "safety": {},
             "brand_context": {},
             "research_data": {},
             "retrieved_documents": [],
@@ -387,6 +391,9 @@ class SocialWorkflow:
             "final_output": state.get("final_output", {}),
             "social_meta": social_meta,
             "errors": state.get("errors", []),
+            "safety": state.get("safety") or {},
+            "primary_topic": state.get("primary_topic") or "",
+            "user_constraints": state.get("user_constraints") or {},
         }
 
     @staticmethod
