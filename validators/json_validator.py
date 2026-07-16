@@ -335,7 +335,8 @@ class JSONValidator:
         warnings: List[str] = []
         required_dims = {
             "content_quality", "seo_compliance",
-            "brand_alignment", "structure", "cta_effectiveness",
+            "brand_alignment", "structure",
+            "factual_grounding", "cta_effectiveness",
         }
 
         # Validate dimension_scores
