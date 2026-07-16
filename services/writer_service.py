@@ -587,6 +587,7 @@ SEO placement rules (mandatory):
 - At least one `##` heading should contain a primary or secondary keyword
 
 Content rules:
+- Write like a human, not an AI: vary sentence and paragraph length, use natural transitions and contractions, avoid clichéd filler phrases (no "in today's fast-paced world", "moreover", "furthermore", "in conclusion", "it's worth noting", "dive in", "game-changer", "a testament to", "unlock the power")
 - Stay strictly on the PRIMARY TOPIC LOCK — never invert victims/roles or change the subject
 - Write a hook-driven introduction (100–150 words, no heading under the H1) unless target length is under 400 words — then keep intro proportional
 - Cover every outline section as `##` headings (scale section length to hit ~{target_words} words total)
@@ -941,6 +942,10 @@ SEO notes:
 - Do not keyword-stuff
 - Stay strictly on the primary topic; never divert or invert roles
 
+Human voice (important):
+- Sound like a real person, not AI. Vary sentence length, use contractions, be specific
+- Avoid clichés: no "in today's fast-paced world", "moreover", "furthermore", "in conclusion", "dive in", "game-changer", "unlock the power"
+
 Write the complete {content_type}:
 """
         max_tok = 512 if target_words <= 50 else 2048
@@ -978,14 +983,15 @@ Write the complete {content_type}:
         rewrite_instruction: str = "",
         primary_topic: str = "",
     ) -> str:
-        """Shared system prompt that frames the LLM as a focused writer."""
+        """Shared system prompt that frames the LLM as a focused, human-sounding writer."""
         base = (
-            f"You are an expert content writer specialising in {outline.tone.lower()} writing "
+            f"You are an experienced human content writer specialising in {outline.tone.lower()} writing "
             f"for {outline.audience}. "
             "You follow formatting instructions exactly, never add meta-commentary, "
             "and return only the requested content — no preamble, no sign-off. "
             "Never invent abusive, discriminatory, or illegal how-to content. "
-            "Never divert from the user's primary topic or invert roles/meaning."
+            "Never divert from the user's primary topic or invert roles/meaning.\n\n"
+            + self._human_voice_guide()
         )
         if primary_topic:
             base += f"\n\nPRIMARY TOPIC LOCK:\n{primary_topic}"
@@ -995,6 +1001,31 @@ Write the complete {content_type}:
                 "Apply these instructions throughout the entire piece."
             )
         return base
+
+    @staticmethod
+    def _human_voice_guide() -> str:
+        """Balanced, brand-safe rules that make output read as human-written."""
+        return (
+            "WRITE LIKE A HUMAN (critical — content must not read as AI-generated):\n"
+            "- Vary sentence length and rhythm. Mix short, punchy sentences with longer ones. "
+            "Avoid a uniform, robotic cadence.\n"
+            "- Vary paragraph length too — some one-liners, some fuller paragraphs.\n"
+            "- Use natural transitions. NEVER use these AI-cliché phrases: "
+            "\"in today's fast-paced world\", \"in today's digital age\", \"in the ever-evolving\", "
+            "\"when it comes to\", \"it's worth noting\", \"it's important to note\", \"needless to say\", "
+            "\"moreover\", \"furthermore\", \"in conclusion\", \"in summary\", \"to sum up\", "
+            "\"dive in\"/\"dive deep\", \"unlock the power\", \"unleash\", \"a game-changer\", "
+            "\"a testament to\", \"plays a crucial/vital/pivotal role\", \"navigating the\", "
+            "\"elevate your\", \"rest assured\", \"look no further\", \"we've got you covered\".\n"
+            "- Use contractions naturally (it's, you're, don't, we've).\n"
+            "- Prefer concrete, specific nouns and real examples over vague generalities.\n"
+            "- Address the reader directly with \"you\" where it fits; light first-person (\"we\") is fine.\n"
+            "- Do not over-hedge or over-explain. Trust the reader.\n"
+            "- Avoid formulaic scaffolding (e.g. rigidly equal sections, a forced summary that "
+            "restates everything). End with a genuine, specific closing rather than a generic wrap-up.\n"
+            "- Keep it professional and on-brand — natural, not slangy or unprofessional.\n"
+            "- No emojis unless explicitly requested."
+        )
 
     def _format_section_list(self, sections: List[ContentSection]) -> str:
         """Format the section list for inclusion in a prompt."""
