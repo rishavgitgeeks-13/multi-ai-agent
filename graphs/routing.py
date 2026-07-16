@@ -18,6 +18,41 @@ from config.settings import settings
 logger = logging.getLogger(__name__)
 
 
+def manager_router(state: ContentState) -> str:
+    """
+    Route after the Manager Agent.
+
+    BLOCKED → END (no research / writing)
+    else    → "research"
+    """
+    if state.get("workflow_status") == "BLOCKED" or (state.get("safety") or {}).get(
+        "blocked"
+    ):
+        logger.info(
+            "Router manager → END | blocked category=%s",
+            (state.get("safety") or {}).get("category", ""),
+        )
+        return END
+
+    logger.info("Router manager → research")
+    return "research"
+
+
+def writer_router(state: ContentState) -> str:
+    """
+    Route after the Writer Agent.
+
+    BLOCKED → END (draft discarded; skip Review)
+    else    → "review"
+    """
+    if state.get("workflow_status") == "BLOCKED" or (state.get("safety") or {}).get(
+        "blocked"
+    ):
+        logger.info("Router writer → END | blocked at writer")
+        return END
+    return "review"
+
+
 def review_router(state: ContentState) -> str:
     """
     Route after the Review Agent.
@@ -29,6 +64,10 @@ def review_router(state: ContentState) -> str:
     needs_revision=False once the cap is reached, so this router only
     needs to inspect a single flag.
     """
+    if state.get("workflow_status") == "BLOCKED":
+        logger.info("Router review → END | safety discarded draft")
+        return END
+
     review = state.get("review", {})
     needs_revision = review.get("needs_revision", False)
 
