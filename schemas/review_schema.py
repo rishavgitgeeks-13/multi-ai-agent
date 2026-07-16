@@ -18,11 +18,12 @@ PASS_THRESHOLD = 95
 
 # Dimension weights — must match ReviewService.DIMENSION_WEIGHTS
 DIMENSION_WEIGHTS: Dict[str, float] = {
-    "content_quality": 0.20,
-    "seo_compliance": 0.25,
-    "brand_alignment": 0.20,
-    "structure": 0.15,
+    "content_quality": 0.18,
+    "seo_compliance": 0.22,
+    "brand_alignment": 0.18,
+    "structure": 0.12,
     "factual_grounding": 0.15,
+    "natural_voice": 0.10,
     "cta_effectiveness": 0.05,
 }
 
@@ -37,11 +38,12 @@ class DimensionScores(BaseModel):
     Per-dimension scores (0–100) from the LLM evaluation.
 
     Weights applied to produce the final composite score:
-      content_quality    20%
-      seo_compliance     25%
-      brand_alignment    20%
-      structure          15%
+      content_quality    18%
+      seo_compliance     22%
+      brand_alignment    18%
+      structure          12%
       factual_grounding  15%
+      natural_voice      10%
       cta_effectiveness   5%
     """
 
@@ -55,6 +57,8 @@ class DimensionScores(BaseModel):
     """Intro / body / conclusion flow and heading hierarchy."""
     factual_grounding: int = Field(default=0, ge=0, le=100)
     """Attributed statistics, citations, and absence of unsupported claims."""
+    natural_voice: int = Field(default=0, ge=0, le=100)
+    """Human-like voice: varied rhythm, natural flow, no AI-cliché phrases."""
     cta_effectiveness: int = Field(default=0, ge=0, le=100)
     """CTA clarity, specificity, and intent alignment."""
 
