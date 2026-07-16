@@ -184,6 +184,9 @@ class BusinessContextService:
         )
 
         return {
+            # Flatten brand fields so Writer/Review/SEO/Research can read
+            # tone, cta, display_name, namespace, etc. at the top level.
+            **cfg,
             "brand_config": cfg,
             **workflow_context,
         }
