@@ -146,6 +146,10 @@ def strategy_node(state: ContentState) -> ContentState:
                     "primary_keywords",
                     [],
                 ),
+                "secondary_keywords": seo_blueprint.get(
+                    "secondary_keywords",
+                    [],
+                ),
                 "audience": brand.get(
                     "reader_segment",
                     [],
