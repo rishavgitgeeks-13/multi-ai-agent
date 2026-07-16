@@ -18,3 +18,4 @@ openai
 pinecone-client
 numpy
 rank-bm25
+scikit-learn
