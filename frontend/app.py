@@ -37,7 +37,8 @@ if "session_id" not in st.session_state:
 if "results" not in st.session_state:
     st.session_state.results = {}          # keyed by tab name
 if "api_url" not in st.session_state:
-    st.session_state.api_url = "http://localhost:8000"
+    #st.session_state.api_url = "http://localhost:8000"
+    st.session_state.api_url = "http://54.218.34.106:9000"
 if "brands" not in st.session_state:
     st.session_state.brands = []
 
