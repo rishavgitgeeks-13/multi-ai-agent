@@ -48,12 +48,16 @@ def strategy_node(state: ContentState) -> ContentState:
         state["user_input"][:80],
     )
 
-    user_input = state["user_input"]
+    user_input = state.get("primary_topic") or state["user_input"]
     research = state["research_data"]
     brand = state["brand_context"]
     platform = state.get("platform", "website")
     content_type = state.get("content_type", "article")
     language = state.get("language", "English")
+
+    # Honour user word-count when building outline scale
+    constraints = state.get("user_constraints") or {}
+    target_words = constraints.get("target_word_count")
 
     # ------------------------------------------------------------------
     # 1 — SEO Service
@@ -241,6 +245,13 @@ def strategy_node(state: ContentState) -> ContentState:
 
         # Citations
         "citations": citations,
+
+        # Safety / fidelity / constraints from Manager
+        "primary_topic": state.get("primary_topic") or user_input,
+        "target_word_count": target_words,
+        "word_count_flexible": bool(
+            (constraints or {}).get("word_count_flexible", True)
+        ),
     }
 
     # ------------------------------------------------------------------
