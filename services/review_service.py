@@ -30,7 +30,7 @@ Evaluation dimensions
   Structure          20 % — intro / body / conclusion, heading hierarchy
   CTA Effectiveness  10 % — clear, action-oriented, intent-matched
 
-PASS threshold : score >= 70
+PASS threshold : score >= 95
 """
 
 import json
@@ -43,7 +43,7 @@ from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
-PASS_THRESHOLD = 75
+PASS_THRESHOLD = 95
 
 DIMENSION_WEIGHTS: Dict[str, float] = {
     "content_quality": 0.20,
@@ -114,17 +114,22 @@ class ReviewService:
         status = "PASS" if score >= PASS_THRESHOLD else "FAIL"
         needs_revision = status == "FAIL"
 
+        rewrite_instruction = ""
+        if needs_revision:
+            rewrite_instruction = (llm_result.get("rewrite_instruction") or "").strip()
+            if not rewrite_instruction:
+                rewrite_instruction = self._fallback_rewrite_instruction(
+                    dim_scores=dim_scores,
+                    issues=pre_check_issues + llm_result.get("issues", []),
+                )
+
         review = {
             "score": score,
             "status": status,
             "needs_revision": needs_revision,
             "feedback": llm_result.get("feedback", []),
             "issues": pre_check_issues + llm_result.get("issues", []),
-            "rewrite_instruction": (
-                llm_result.get("rewrite_instruction", "")
-                if needs_revision
-                else ""
-            ),
+            "rewrite_instruction": rewrite_instruction,
             "dimension_scores": dim_scores,
             "revision_number": revision_count + 1,
         }
@@ -163,18 +168,78 @@ class ReviewService:
                     f"(maximum {settings.MAX_ARTICLE_WORDS})."
                 )
 
-        # Primary keyword presence check
-        seo = strategy.get("seo", {})
-        primary_keywords = seo.get("primary_keywords") or strategy.get("keywords", [])
-        draft_lower = draft.lower()
-        missing_keywords = [
-            kw for kw in primary_keywords[:3]
-            if kw.lower() not in draft_lower
-        ]
-        if missing_keywords:
-            issues.append(
-                f"Primary keywords not found in content: {', '.join(missing_keywords)}."
+        # Primary / secondary SEO checks (fair matching — not brittle exact-only)
+        seo = strategy.get("seo", {}) or {}
+        primary_keywords = [
+            str(k).strip()
+            for k in (
+                seo.get("primary_keywords")
+                or strategy.get("keywords")
+                or []
             )
+            if str(k).strip()
+        ]
+        secondary_keywords = [
+            str(k).strip()
+            for k in (
+                seo.get("secondary_keywords")
+                or strategy.get("secondary_keywords")
+                or []
+            )
+            if str(k).strip()
+        ]
+        draft_lower = draft.lower()
+
+        if primary_keywords:
+            lead = primary_keywords[0]
+            if not self._keyword_covered(lead, draft_lower):
+                issues.append(
+                    f"Lead primary keyword not adequately covered in content: {lead}."
+                )
+            else:
+                missing_other = [
+                    kw for kw in primary_keywords[1:2]
+                    if not self._keyword_covered(kw, draft_lower)
+                ]
+                if missing_other:
+                    issues.append(
+                        f"Primary keywords weakly covered: {', '.join(missing_other)}."
+                    )
+
+            if content_type in ("blog", "article"):
+                h1_match = re.search(r"^#\s+(.+)$", draft, re.MULTILINE)
+                if h1_match and not self._keyword_covered(lead, h1_match.group(1).lower()):
+                    issues.append(
+                        f"Lead primary keyword weakly covered in H1 title: {lead}."
+                    )
+
+        # Secondary: only enforce shorter, placeable phrases (≤5 words).
+        placeable_secondary = [
+            kw for kw in secondary_keywords[:6]
+            if len(kw.split()) <= 5
+        ]
+        if placeable_secondary and content_type in ("blog", "article"):
+            hit = any(
+                self._keyword_covered(kw, draft_lower)
+                for kw in placeable_secondary
+            )
+            if not hit:
+                issues.append(
+                    "Secondary keywords weakly covered. "
+                    f"Naturally include at least one of: {', '.join(placeable_secondary[:3])}."
+                )
+
+        # Soft density band for lead primary (warn only).
+        if primary_keywords and content_type in ("blog", "article") and word_count > 0:
+            lead = primary_keywords[0].lower()
+            escaped = re.escape(lead)
+            count = len(re.findall(r"\b" + escaped + r"\b", draft_lower))
+            density_pct = (count / word_count) * 100.0
+            if count > 0 and density_pct > 3.0:
+                issues.append(
+                    f"Lead primary keyword may be overused "
+                    f"({density_pct:.1f}% density; aim for ~0.5–2.5%)."
+                )
 
         # Heading structure check
         h2_count = len(re.findall(r"^##\s+", draft, re.MULTILINE))
@@ -189,6 +254,34 @@ class ReviewService:
             issues.append("CTA text not found in the content.")
 
         return issues
+
+    @staticmethod
+    def _keyword_covered(keyword: str, text_lower: str) -> bool:
+        """
+        True if the keyword (or most of its content tokens) appears in text.
+
+        Exact phrase match preferred; otherwise ≥70% of meaningful tokens.
+        Avoids failing reviews on near-matches when content is on-topic.
+        """
+        kw = (keyword or "").strip().lower()
+        if not kw:
+            return True
+        if kw in text_lower:
+            return True
+
+        stop = {
+            "a", "an", "the", "for", "to", "of", "in", "on", "and", "or",
+            "how", "what", "with", "from", "by",
+        }
+        parts = [
+            p for p in re.findall(r"[a-z0-9]+", kw)
+            if len(p) > 2 and p not in stop
+        ]
+        if not parts:
+            return False
+        hits = sum(1 for p in parts if p in text_lower)
+        need = max(1, int((len(parts) * 7 + 9) // 10))  # ceil(0.7 * n)
+        return hits >= need
 
     # ------------------------------------------------------------------
     # LLM evaluation
@@ -240,6 +333,12 @@ class ReviewService:
         primary_kw = seo.get("primary_keywords") or strategy.get("keywords", [])
         secondary_kw = seo.get("secondary_keywords") or []
         tone = brand_context.get("tone") or strategy.get("tone", "professional")
+        brand_name = (
+            brand_context.get("display_name")
+            or brand_context.get("brand_name")
+            or strategy.get("brand")
+            or "the brand"
+        )
         audience = brand_context.get("reader_segment") or strategy.get("audience", [])
         pain_points = brand_context.get("pain_points") or strategy.get("pain_points", [])
         cta = strategy.get("cta") or brand_context.get("cta", "")
@@ -252,26 +351,33 @@ class ReviewService:
         secondary_str = ", ".join(secondary_kw[:5]) if secondary_kw else "none"
         pre_issues_str = "\n".join(f"- {i}" for i in pre_check_issues) if pre_check_issues else "None"
 
-        # Truncate draft to avoid token overflow
-        if len(draft) > 4000:
-            truncated_draft = (
-            draft[:1500]
-            + "\n\n[section removed to fit context window]\n\n"
-            + draft[-1500:]
-        )
-        else:
-            truncated_draft = draft    
+        truncated_draft = self._prepare_draft_for_review(draft)
 
         return f"""Evaluate the following {content_type} draft.
 
+IMPORTANT REVIEW RULES:
+- Aim for high, fair scores when content is substantive and on-topic.
+- Scores of 95–100 are appropriate when requirements are met with only minor polish needed.
+- Brand criteria ARE provided below — do NOT claim tone/audience were unspecified.
+- If an H2 OUTLINE block is present, do NOT assume middle body sections are missing —
+  truncation is for context-window limits only; judge from intro + outline + closing.
+- Do NOT flag mid-sentence cutoffs at excerpt boundaries as draft defects when an H2 OUTLINE
+  block is present — those cuts are review-window artifacts, not publishing errors.
+- Do not invent issues that are not visible in the provided excerpts.
+- Prefer specific actionable feedback over harsh generic deductions.
+- Score factual_grounding 90+ when the draft uses at least 2–3 clear attributed statistics/citations
+  (named source + concrete figure) and avoids absolute uncited industry claims.
+- Score cta_effectiveness 90+ only when the closing CTA matches or closely matches: {cta or "(brand CTA)"}
+
 === EVALUATION CRITERIA ===
+BRAND                : {brand_name}
 EXPECTED TONE        : {tone}
 TARGET AUDIENCE      : {audience_str}
 PAIN POINTS TO ADDRESS: {pain_str}
 PRIMARY KEYWORDS     : {primary_str}
 SECONDARY KEYWORDS   : {secondary_str}
 SEARCH INTENT        : {search_intent}
-CTA                  : {cta}
+REQUIRED CTA         : {cta or "none"}
 
 === PRE-CHECK ISSUES (already identified) ===
 {pre_issues_str}
@@ -326,6 +432,7 @@ Return ONLY this JSON object:
     "seo_compliance": <int 0-100>,
     "brand_alignment": <int 0-100>,
     "structure": <int 0-100>,
+    "factual_grounding": <int 0-100>,
     "cta_effectiveness": <int 0-100>
   }},
   "feedback": [
@@ -336,9 +443,46 @@ Return ONLY this JSON object:
     "<specific problem not already listed in pre-check issues>",
     "<specific problem>"
   ],
-  "rewrite_instruction": "<If score < 75: one concise paragraph (maximum 150 words) of actionable revision guidance for the Writer Agent. If score >= 75: empty string.>"
+  "rewrite_instruction": "<If weighted score would be < {PASS_THRESHOLD}: one concise paragraph (maximum 150 words) of actionable revision guidance for the Writer Agent. Lead with the lowest-scoring dimension (especially factual_grounding: add 2–3 attributed research stats/citations; no absolute uncited claims). Also fix secondary-keyword gaps in intro/closing and any incomplete sentences. If score >= {PASS_THRESHOLD}: empty string.>"
 }}
 """
+
+    @staticmethod
+    def _prepare_draft_for_review(draft: str, max_chars: int = 7500) -> str:
+        """
+        Truncate long drafts without falsely implying middle sections are missing.
+        Preserves intro, H2 outline, and closing — cuts at sentence boundaries.
+        """
+        text = draft or ""
+        if len(text) <= max_chars:
+            return text
+
+        headings = re.findall(r"^##\s+.+$", text, re.MULTILINE)
+        outline = "\n".join(headings[:14]) if headings else "(no H2 headings found)"
+        head = ReviewService._cut_at_sentence_boundary(text, 2800, from_end=False)
+        tail = ReviewService._cut_at_sentence_boundary(text, 2200, from_end=True)
+        return (
+            f"{head}\n\n"
+            f"=== H2 OUTLINE (full article has these sections) ===\n"
+            f"{outline}\n\n"
+            f"=== CLOSING ===\n"
+            f"{tail}"
+        )
+
+    @staticmethod
+    def _cut_at_sentence_boundary(text: str, max_chars: int, from_end: bool) -> str:
+        """Trim to max_chars without leaving a dangling mid-sentence fragment."""
+        if len(text) <= max_chars:
+            return text
+        if from_end:
+            chunk = text[-max_chars:]
+            match = re.search(r"(?<=[.!?])\s+", chunk)
+            return chunk[match.end():] if match else chunk
+        chunk = text[:max_chars]
+        matches = list(re.finditer(r"[.!?](?:\s|$)", chunk))
+        if matches:
+            return chunk[: matches[-1].end()].rstrip()
+        return chunk.rstrip()
 
     def _parse_evaluation(self, raw: str) -> Dict:
         """Parse and validate the LLM evaluation JSON response."""
@@ -391,6 +535,28 @@ Return ONLY this JSON object:
             for dim, weight in DIMENSION_WEIGHTS.items()
         )
         return round(weighted)
+
+    @staticmethod
+    def _fallback_rewrite_instruction(
+        dim_scores: Dict[str, int],
+        issues: List[str],
+    ) -> str:
+        """Build rewrite guidance when the LLM left rewrite_instruction empty."""
+        lowest = min(DIMENSION_WEIGHTS.keys(), key=lambda d: dim_scores.get(d, 0))
+        issue_bits = "; ".join(str(i) for i in issues[:3] if str(i).strip())
+        base = (
+            f"Revise to reach an overall score of at least {PASS_THRESHOLD}. "
+            f"Priority dimension: {lowest}. "
+            "Add 3 attributed statistics from research (named source + concrete figure/"
+            "percentage/year — never invent orgs or vague 'studies show'); "
+            "remove absolute uncited industry claims; place secondary keywords "
+            "naturally in the introduction and conclusion; complete every sentence; "
+            "close with the brand CTA verbatim (specific action, not 'reach out today'); "
+            "write currency as USD amounts without the $ character."
+        )
+        if issue_bits:
+            return f"{base} Also address: {issue_bits}"
+        return base
 
     # ------------------------------------------------------------------
     # Markdown stripping utility
