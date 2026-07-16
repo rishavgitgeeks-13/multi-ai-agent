@@ -19,6 +19,7 @@ import re
 import logging
 from typing import Dict, List, Tuple
 
+from config.settings import settings
 from schemas.research_schema import (
     ResearchData,
     ResearchDocument,
@@ -297,7 +298,14 @@ class ResearchService:
             )
 
             tavily = TavilySearch()
-            tavily_results = tavily.search(query)
+            # basic + no raw_content keeps research under a few seconds
+            # instead of minutes of page scraping.
+            tavily_results = tavily.search(
+                query,
+                search_depth="basic",
+                include_raw_content=False,
+                include_answer=False,
+            )
 
             logger.info(
                 "Tavily returned %d results",
@@ -419,8 +427,13 @@ class ResearchService:
 
             tavily = TavilySearch()
 
+            # Cheap path: basic depth, snippets only, fewer results.
             reddit_results = tavily.search(
-                f"site:reddit.com {query}"
+                f"site:reddit.com {query}",
+                max_results=min(3, settings.TAVILY_MAX_RESULTS),
+                search_depth="basic",
+                include_raw_content=False,
+                include_answer=False,
             )
 
             logger.info(
@@ -431,8 +444,8 @@ class ResearchService:
             for item in reddit_results:
 
                 text_content = (
-                    item.get("raw_content")
-                    or item.get("content")
+                    item.get("content")
+                    or item.get("raw_content")
                     or ""
                 )
 
@@ -593,6 +606,10 @@ class ResearchService:
                     )
 
                     snippet = text[start:end].strip()
+                    # Attach source title so Writer can attribute claims.
+                    source_label = (doc.title or "").strip()
+                    if source_label and source_label.lower() not in snippet.lower():
+                        snippet = f"{snippet} (Source: {source_label})"
 
                     if (
                         snippet
