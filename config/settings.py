@@ -44,7 +44,8 @@ class Settings(BaseSettings):
     NEWS_PAGE_SIZE: int = 5
 
     YOUTUBE_API_KEY: str | None = None
-    YOUTUBE_MAX_RESULTS: int = 5
+    # Keep this small — each result may fetch a transcript (with timeout).
+    YOUTUBE_MAX_RESULTS: int = 3
 
     # ==========================================================
     # Reddit (Optional)
@@ -74,7 +75,7 @@ class Settings(BaseSettings):
     MAX_REVIEW_ITERATIONS: int = 3
     MAX_RESEARCH_RESULTS: int = 10
     DEFAULT_TEMPERATURE: float = 0.2
-    MAX_TOKENS: int = 8192
+    MAX_TOKENS: int = 4096
 
     # ==========================================================
     # Content Configuration
