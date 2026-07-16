@@ -47,8 +47,12 @@ if "brands" not in st.session_state:
 # ==========================================================================
 
 
-def call_api(endpoint: str, payload: Dict[str, Any], timeout: int = 300) -> Dict[str, Any]:
-    """POST to the FastAPI backend. Returns the JSON response dict."""
+def call_api(endpoint: str, payload: Dict[str, Any], timeout: int = 900) -> Dict[str, Any]:
+    """POST to the FastAPI backend. Returns the JSON response dict.
+
+    Default timeout is 15 minutes — long-form content can run many serial
+    LLM calls (research → strategy → write sections → review revisions).
+    """
     url = f"{st.session_state.api_url}/api/{endpoint}"
     try:
         resp = requests.post(url, json=payload, timeout=timeout)
@@ -90,6 +94,13 @@ def check_api_health() -> bool:
 # ==========================================================================
 # Result display helpers
 # ==========================================================================
+
+
+def _escape_markdown_currency(text: str) -> str:
+    """Prevent Streamlit from treating $...$ as LaTeX (jams spaces / italicizes)."""
+    if not text:
+        return text
+    return text.replace("$", r"\$")
 
 
 def _get_markdown(result: Dict) -> str:
@@ -144,7 +155,10 @@ def display_metadata_panel(metadata: Dict, result: Dict) -> None:
 
     col1, col2, col3 = st.columns(3)
     col1.metric("Word Count", metadata.get("word_count", "—"))
-    col2.metric("Read Time", f"{metadata.get('read_time_min', '—')} min")
+    read_time = metadata.get("read_time_min")
+    if read_time is None:
+        read_time = metadata.get("reading_time_minutes", "—")
+    col2.metric("Read Time", f"{read_time} min")
     col3.metric("Language", metadata.get("language", "—"))
 
     if seo:
@@ -264,7 +278,7 @@ def display_result(result: Dict, workflow_type: str) -> None:
     # --- Content tab ---
     with tabs[0]:
         if markdown:
-            st.markdown(markdown)
+            st.markdown(_escape_markdown_currency(markdown))
             st.divider()
             col1, col2 = st.columns([1, 4])
             col1.download_button(
@@ -443,7 +457,7 @@ with tab_auto:
             }
 
             with st.spinner(
-                "Auto-detecting workflow and generating content..."
+                "Auto-detecting workflow and generating content… this can take a few minutes."
             ):
                 result = call_api(
                     "generate",
@@ -510,7 +524,7 @@ with tab_content:
                 "session_id": st.session_state.session_id,
                 "max_revisions": c_max_rev,
             }
-            with st.spinner("Running 5-agent pipeline… this takes 30–90 seconds."):
+            with st.spinner("Running 5-agent pipeline… this can take a few minutes."):
                 result = call_api("generate/content", payload)
             st.session_state.results["content"] = result
 
@@ -561,7 +575,7 @@ with tab_email:
                 "session_id": st.session_state.session_id,
                 "max_revisions": e_max_rev,
             }
-            with st.spinner("Generating email… this takes 20–60 seconds."):
+            with st.spinner("Generating email… this can take 1–3 minutes."):
                 result = call_api("generate/email", payload)
             st.session_state.results["email"] = result
 
@@ -607,7 +621,7 @@ with tab_seo:
                 "session_id": st.session_state.session_id,
                 "max_revisions": s_max_rev,
             }
-            with st.spinner("Running SEO pipeline… this takes 30–90 seconds."):
+            with st.spinner("Running SEO pipeline… this can take a few minutes."):
                 result = call_api("generate/seo", payload)
             st.session_state.results["seo"] = result
 
@@ -655,7 +669,7 @@ with tab_social:
                 "session_id": st.session_state.session_id,
                 "max_revisions": so_max_rev,
             }
-            with st.spinner("Generating social content… this takes 20–60 seconds."):
+            with st.spinner("Generating social content… this can take 1–3 minutes."):
                 result = call_api("generate/social", payload)
             st.session_state.results["social"] = result
 
