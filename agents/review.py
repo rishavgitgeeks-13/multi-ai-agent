@@ -18,7 +18,7 @@ The Review Agent does not generate or modify content.
 import logging
 
 from schemas.state import ContentState
-from services.review_service import ReviewService
+from services.review_service import ReviewService, PASS_THRESHOLD
 
 from config.settings import settings
 
@@ -64,7 +64,9 @@ def review_node(state: ContentState) -> ContentState:
         review["status"] = "PASS"
         review["feedback"].append(
             f"Maximum revision limit ({max_revisions}) reached. "
-            "Passing content with current score."
+            f"Force-passed at score {review['score']} "
+            f"(quality target is {PASS_THRESHOLD}+). "
+            f"Treat as below target if score < {PASS_THRESHOLD}."
         )
 
     # ------------------------------------------------------------------
