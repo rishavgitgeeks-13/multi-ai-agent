@@ -290,6 +290,9 @@ class SEOWorkflow:
             "objective": "seo",
             "language": language,
             "additional_instructions": additional_instructions,
+            "primary_topic": "",
+            "user_constraints": {},
+            "safety": {},
             "brand_context": {},
             "research_data": {},
             "retrieved_documents": [],
@@ -348,6 +351,9 @@ class SEOWorkflow:
             "final_output": state.get("final_output", {}),
             "seo_analysis": seo_analysis,
             "errors": state.get("errors", []),
+            "safety": state.get("safety") or {},
+            "primary_topic": state.get("primary_topic") or "",
+            "user_constraints": state.get("user_constraints") or {},
         }
 
     @staticmethod
