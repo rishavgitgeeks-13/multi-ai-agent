@@ -139,6 +139,9 @@ class WorkflowResult(BaseModel):
     metadata: Dict[str, Any] = {}
     final_output: Dict[str, Any] = {}
     errors: List[str] = []
+    safety: Dict[str, Any] = {}
+    primary_topic: str = ""
+    user_constraints: Dict[str, Any] = {}
 
     model_config = {"arbitrary_types_allowed": True}
 
