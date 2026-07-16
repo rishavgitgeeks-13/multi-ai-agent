@@ -291,6 +291,7 @@ FORMAT REQUIREMENTS:
 ### Keyword usage
 - Include **all primary keywords** at least once — in the title, at least one H2, and the body.
 - Distribute secondary keywords naturally across body sections.
+- Place at least one secondary keyword in the introduction and one in the conclusion.
 - Never force a keyword where it sounds unnatural. Paraphrase if needed.
 - Keyword density target: 1–2% for primary, 0.5–1% for secondary.
 
@@ -299,7 +300,9 @@ FORMAT REQUIREMENTS:
 - Attribute every statistic: "According to McKinsey (2024)…" or "(McKinsey, 2024)".
 - Never fabricate statistics.
 - If `research_data["statistics"]` is empty, do not invent numbers or percentages.
-- Instead, use credible domain knowledge with appropriate hedging:
+- Do not state absolute industry claims unless they appear in research stats/citations; otherwise hedge or omit.
+- Proof / case-study sections must use research stats or named citations — brand mention alone is not enough.
+- Prefer hedged domain language only when research has no supporting number:
   - "Industry observers note..."
   - "Several studies suggest..."
   - "Research indicates..."
