@@ -3,12 +3,17 @@ Searches YouTube for relevant videos and extracts
 their transcripts for downstream AI agents.
 """
 
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import List, Dict
-import requests
 
+import requests
 from youtube_transcript_api import YouTubeTranscriptApi
 
 from config.settings import settings
+
+# Hard cap so a stalled transcript fetch cannot block the whole pipeline.
+_TRANSCRIPT_TIMEOUT_SEC = 8
+_MAX_TRANSCRIPT_CHARS = 4000
 
 
 class YouTubeSearch:
@@ -70,8 +75,7 @@ class YouTubeSearch:
                 video_id = item["id"]["videoId"]
 
                 transcript = self._get_transcript(video_id)
-                MAX_TRANSCRIPT_CHARS = 4000
-                transcript = transcript[:MAX_TRANSCRIPT_CHARS]
+                transcript = transcript[:_MAX_TRANSCRIPT_CHARS]
                 print(
                     f"[YouTubeSearch] "
                     f"{video_id} "
@@ -98,34 +102,23 @@ class YouTubeSearch:
 
             return []
 
-    def _get_transcript(
-        self,
-        video_id: str
-    ) -> str:
+    def _get_transcript(self, video_id: str) -> str:
         """
-        Download transcript for a video.
+        Download transcript for a video with a hard timeout.
 
-        Returns empty string if unavailable.
+        Returns empty string if unavailable or timed out.
         """
-
         try:
-            ytt_api = YouTubeTranscriptApi()
-
-            try:
-                transcript = ytt_api.fetch(
-                    video_id,
-                    languages=["en", "hi"]
-                )
-            except Exception:
-                transcript = ytt_api.fetch(
-                    video_id
-                )
-
-            return " ".join(
-                segment.text
-                for segment in transcript
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(self._fetch_transcript, video_id)
+                return future.result(timeout=_TRANSCRIPT_TIMEOUT_SEC)
+        except FuturesTimeoutError:
+            print(
+                f"[YouTubeTranscript] "
+                f"video_id={video_id} "
+                f"timed out after {_TRANSCRIPT_TIMEOUT_SEC}s — skipping"
             )
-
+            return ""
         except Exception as exc:
             print(
                 f"[YouTubeTranscript] "
@@ -133,3 +126,17 @@ class YouTubeSearch:
                 f"error={type(exc).__name__}: {exc}"
             )
             return ""
+
+    def _fetch_transcript(self, video_id: str) -> str:
+        """Blocking transcript download (run inside a timed worker)."""
+        ytt_api = YouTubeTranscriptApi()
+
+        try:
+            transcript = ytt_api.fetch(
+                video_id,
+                languages=["en", "hi"],
+            )
+        except Exception:
+            transcript = ytt_api.fetch(video_id)
+
+        return " ".join(segment.text for segment in transcript)
