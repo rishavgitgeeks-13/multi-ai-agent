@@ -46,13 +46,65 @@ logger = logging.getLogger(__name__)
 PASS_THRESHOLD = 95
 
 DIMENSION_WEIGHTS: Dict[str, float] = {
-    "content_quality": 0.20,
-    "seo_compliance": 0.25,
-    "brand_alignment": 0.20,
-    "structure": 0.15,
+    "content_quality": 0.18,
+    "seo_compliance": 0.22,
+    "brand_alignment": 0.18,
+    "structure": 0.12,
     "factual_grounding": 0.15,
+    "natural_voice": 0.10,
     "cta_effectiveness": 0.05,
 }
+
+# Phrases that make content read as AI-generated. Flagged in pre-checks and
+# penalised in the natural_voice dimension.
+AI_TELL_PHRASES: List[str] = [
+    "in today's fast-paced world",
+    "in today's digital age",
+    "in the ever-evolving",
+    "in the world of",
+    "when it comes to",
+    "it's worth noting",
+    "it is worth noting",
+    "it's important to note",
+    "it is important to note",
+    "needless to say",
+    "at the end of the day",
+    "in conclusion",
+    "in summary",
+    "to sum up",
+    "moreover",
+    "furthermore",
+    "additionally,",
+    "however, it is",
+    "as we can see",
+    "in this article, we will",
+    "in this article, we'll",
+    "this article will",
+    "let's dive in",
+    "let's dive into",
+    "dive deep",
+    "unlock the power",
+    "unleash the",
+    "in the realm of",
+    "navigating the",
+    "a game-changer",
+    "game changer",
+    "the key takeaway",
+    "rest assured",
+    "look no further",
+    "we've got you covered",
+    "whether you're",
+    "not only ... but also",
+    "plays a crucial role",
+    "plays a vital role",
+    "plays a pivotal role",
+    "a testament to",
+    "in essence",
+    "ultimately,",
+    "elevate your",
+    "in the fast-paced",
+    "ever-changing landscape",
+]
 
 
 class ReviewService:
@@ -253,7 +305,56 @@ class ReviewService:
         if cta and cta.lower() not in draft_lower:
             issues.append("CTA text not found in the content.")
 
+        # AI-tell phrase check (natural voice)
+        found_tells = self._detect_ai_tells(draft_lower)
+        if found_tells:
+            issues.append(
+                "Reads as AI-generated — remove/replace clichéd phrases: "
+                + ", ".join(f'"{p}"' for p in found_tells[:6])
+                + ". Rewrite in a natural human voice."
+            )
+
+        # Sentence-rhythm uniformity (robotic cadence) for long-form
+        if content_type in ("blog", "article"):
+            uniformity = self._sentence_length_uniformity(self._strip_markdown(draft))
+            if uniformity is not None and uniformity < 0.28:
+                issues.append(
+                    "Sentence rhythm is too uniform (robotic). Vary sentence "
+                    "length — mix short punchy sentences with longer ones."
+                )
+
         return issues
+
+    @staticmethod
+    def _detect_ai_tells(text_lower: str) -> List[str]:
+        """Return AI-cliché phrases present in the draft."""
+        found: List[str] = []
+        for phrase in AI_TELL_PHRASES:
+            if "..." in phrase:
+                a, b = [p.strip() for p in phrase.split("...")]
+                if re.search(re.escape(a) + r".{0,40}" + re.escape(b), text_lower):
+                    found.append(phrase)
+            elif phrase in text_lower:
+                found.append(phrase)
+        return found
+
+    @staticmethod
+    def _sentence_length_uniformity(text: str) -> float | None:
+        """
+        Coefficient of variation of sentence word-counts.
+        Low value = uniform/robotic; higher = more human variation.
+        Returns None when there are too few sentences to judge.
+        """
+        sentences = [s.strip() for s in re.split(r"[.!?]+\s+", text) if s.strip()]
+        lengths = [len(s.split()) for s in sentences if len(s.split()) > 2]
+        if len(lengths) < 6:
+            return None
+        mean = sum(lengths) / len(lengths)
+        if mean == 0:
+            return None
+        variance = sum((n - mean) ** 2 for n in lengths) / len(lengths)
+        std = variance ** 0.5
+        return std / mean
 
     @staticmethod
     def _keyword_covered(keyword: str, text_lower: str) -> bool:
@@ -368,6 +469,11 @@ IMPORTANT REVIEW RULES:
 - Score factual_grounding 90+ when the draft uses at least 2–3 clear attributed statistics/citations
   (named source + concrete figure) and avoids absolute uncited industry claims.
 - Score cta_effectiveness 90+ only when the closing CTA matches or closely matches: {cta or "(brand CTA)"}
+- Score natural_voice 90+ ONLY when the writing reads like a skilled human wrote it:
+  varied sentence length and rhythm, natural transitions, some personality, and NO AI-cliché
+  phrases (e.g. "in today's fast-paced world", "moreover", "furthermore", "in conclusion",
+  "it's worth noting", "dive in", "game-changer", "unlock the power", "a testament to").
+  Deduct heavily for robotic uniform cadence, formulaic scaffolding, or generic filler.
 
 === EVALUATION CRITERIA ===
 BRAND                : {brand_name}
@@ -388,25 +494,25 @@ REQUIRED CTA         : {cta or "none"}
 === SCORING RUBRIC ===
 Score each dimension 0–100:
 
-content_quality (weight 25%)
+content_quality (weight 18%)
   90–100: Exceptional depth, clear structure, compelling narrative
   70–89 : Good coverage, minor gaps in depth or clarity
   50–69 : Adequate but thin, lacks examples or data
   0–49  : Poor — vague, superficial, or off-topic
 
-seo_compliance (weight 25%)
+seo_compliance (weight 22%)
   90–100: Primary keywords in title, headings, and body; ideal density
   70–89 : Keywords mostly present; minor optimisation gaps
   50–69 : Keywords present but not well distributed
   0–49  : Keywords missing from headings or severely underused
 
-brand_alignment (weight 20%)
+brand_alignment (weight 18%)
   90–100: Tone, audience, and pain points perfectly addressed
   70–89 : Mostly aligned; minor tone or audience mismatch
   50–69 : Some misalignment in tone or audience targeting
   0–49  : Wrong tone, wrong audience, pain points not addressed
 
-structure (weight 20%)
+structure (weight 12%)
   90–100: Clear intro → body → conclusion, logical flow, good heading hierarchy
   70–89 : Good structure with minor flow issues
   50–69 : Structure present but transitions are weak
@@ -418,7 +524,15 @@ factual_grounding (weight 15%)
   50–69 : Some unsupported statements or vague statistics
   0–49  : Major claims are unsupported or potentially hallucinated  
 
-cta_effectiveness (weight 10%)
+natural_voice (weight 10%) — HOW HUMAN IT READS
+  90–100: Reads like a skilled human writer; varied sentence rhythm, natural flow,
+          genuine personality, zero AI-cliché phrases
+  70–89 : Mostly natural; a few generic phrases or slightly uniform cadence
+  50–69 : Noticeably AI-like — formulaic transitions, repetitive structure, filler
+  0–49  : Clearly machine-generated — heavy clichés ("in today's world", "moreover",
+          "in conclusion"), robotic uniform sentences, no human voice
+
+cta_effectiveness (weight 5%)
   90–100: Clear, specific, action-oriented CTA aligned with search intent
   70–89 : CTA present but could be stronger or more specific
   50–69 : Weak or vague CTA
@@ -433,6 +547,7 @@ Return ONLY this JSON object:
     "brand_alignment": <int 0-100>,
     "structure": <int 0-100>,
     "factual_grounding": <int 0-100>,
+    "natural_voice": <int 0-100>,
     "cta_effectiveness": <int 0-100>
   }},
   "feedback": [
@@ -443,7 +558,7 @@ Return ONLY this JSON object:
     "<specific problem not already listed in pre-check issues>",
     "<specific problem>"
   ],
-  "rewrite_instruction": "<If weighted score would be < {PASS_THRESHOLD}: one concise paragraph (maximum 150 words) of actionable revision guidance for the Writer Agent. Lead with the lowest-scoring dimension (especially factual_grounding: add 2–3 attributed research stats/citations; no absolute uncited claims). Also fix secondary-keyword gaps in intro/closing and any incomplete sentences. If score >= {PASS_THRESHOLD}: empty string.>"
+  "rewrite_instruction": "<If weighted score would be < {PASS_THRESHOLD}: one concise paragraph (maximum 150 words) of actionable revision guidance for the Writer Agent. Lead with the lowest-scoring dimension (especially factual_grounding: add 2–3 attributed research stats/citations; and natural_voice: remove AI-cliché phrases, vary sentence rhythm, write in a natural human voice). Also fix secondary-keyword gaps in intro/closing and any incomplete sentences. If score >= {PASS_THRESHOLD}: empty string.>"
 }}
 """
 
