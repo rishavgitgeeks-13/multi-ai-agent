@@ -177,16 +177,28 @@ class Formatter:
     # ------------------------------------------------------------------
 
     def _resolve_keywords(self, strategy: Dict) -> List[str]:
-        """Return the keyword list from strategy, normalised to lowercase strings."""
-        seo = strategy.get("seo", {})
-        candidates = (
+        """Return primary + secondary keywords for density measurement."""
+        seo = strategy.get("seo", {}) or {}
+        primary = (
             seo.get("primary_keywords")
             or seo.get("keywords")
             or strategy.get("keywords")
             or strategy.get("keyword_direction")
             or []
         )
-        return [str(k).strip().lower() for k in candidates if str(k).strip()]
+        secondary = (
+            seo.get("secondary_keywords")
+            or strategy.get("secondary_keywords")
+            or []
+        )
+        combined: List[str] = []
+        seen = set()
+        for kw in list(primary)[:2] + list(secondary)[:6]:
+            normalised = str(kw).strip().lower()
+            if normalised and normalised not in seen:
+                seen.add(normalised)
+                combined.append(normalised)
+        return combined
 
     def _compute_keyword_density(
         self,
