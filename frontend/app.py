@@ -36,9 +36,10 @@ if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 if "results" not in st.session_state:
     st.session_state.results = {}          # keyed by tab name
-if "api_url" not in st.session_state:
-    #st.session_state.api_url = "http://localhost:8000"
-    st.session_state.api_url = "http://54.218.34.106:9000"
+API_BASE_URL = "http://54.218.34.106:9000"
+
+# Always point at the deployed API (do not let an old empty session value stick).
+st.session_state.api_url = API_BASE_URL
 if "brands" not in st.session_state:
     st.session_state.brands = []
 
@@ -321,12 +322,6 @@ def display_result(result: Dict, workflow_type: str) -> None:
 
 with st.sidebar:
     st.title("⚙️ Settings")
-
-    # API URL
-    new_url = st.text_input("API URL", value=st.session_state.api_url)
-    if new_url != st.session_state.api_url:
-        st.session_state.api_url = new_url
-        st.session_state.brands = []
 
     # API health indicator
     if st.button("Check API"):
