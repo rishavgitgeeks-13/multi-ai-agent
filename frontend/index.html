@@ -1,0 +1,948 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Editorial Intelligence System</title>
+  <style>
+    :root {
+      --bg: #f4f6f4;
+      --surface: #ffffff;
+      --ink: #1a2420;
+      --muted: #5c6b64;
+      --line: #d5ddd8;
+      --accent: #0f6b5c;
+      --accent-hover: #0b5247;
+      --accent-soft: #e6f3f0;
+      --warn: #9a5b00;
+      --danger: #9b2c2c;
+      --ok: #1f6b3a;
+      --shadow: 0 10px 30px rgba(26, 36, 32, 0.08);
+      --radius: 14px;
+      --font: "Segoe UI", system-ui, -apple-system, sans-serif;
+      --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: var(--font);
+      color: var(--ink);
+      background:
+        radial-gradient(1200px 600px at 10% -10%, #dceee9 0%, transparent 55%),
+        radial-gradient(900px 500px at 100% 0%, #e8ece8 0%, transparent 45%),
+        var(--bg);
+      min-height: 100vh;
+    }
+
+    .wrap {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 28px 18px 64px;
+    }
+
+    header.hero {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      align-items: flex-end;
+      justify-content: space-between;
+      margin-bottom: 22px;
+    }
+
+    .brand-block h1 {
+      margin: 0 0 6px;
+      font-size: clamp(1.6rem, 3vw, 2.2rem);
+      letter-spacing: -0.02em;
+      font-weight: 700;
+    }
+    .brand-block p {
+      margin: 0;
+      color: var(--muted);
+      max-width: 46ch;
+      line-height: 1.45;
+    }
+
+    .status-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      font-size: 0.9rem;
+      box-shadow: var(--shadow);
+    }
+    .dot {
+      width: 9px; height: 9px; border-radius: 50%;
+      background: #a3b0aa;
+    }
+    .dot.ok { background: var(--ok); }
+    .dot.bad { background: var(--danger); }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .settings {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 10px;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, #fbfcfb, #f7faf8);
+      align-items: end;
+    }
+    @media (max-width: 720px) {
+      .settings { grid-template-columns: 1fr; }
+    }
+
+    label {
+      display: block;
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--muted);
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    input[type="text"], input[type="url"], input[type="number"],
+    select, textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font: inherit;
+      color: var(--ink);
+      background: #fff;
+      outline: none;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    textarea { min-height: 110px; resize: vertical; line-height: 1.45; }
+    input:focus, select:focus, textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(15, 107, 92, 0.15);
+    }
+
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 11px 16px;
+      font: inherit;
+      font-weight: 650;
+      cursor: pointer;
+      transition: transform .08s ease, background .15s;
+    }
+    button:active { transform: translateY(1px); }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+    }
+    .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+    .btn-ghost {
+      background: #fff;
+      border: 1px solid var(--line);
+      color: var(--ink);
+    }
+    .btn-ghost:hover:not(:disabled) { background: var(--accent-soft); }
+
+    .tabs {
+      display: flex;
+      gap: 6px;
+      padding: 12px 12px 0;
+      overflow-x: auto;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+    }
+    .tab-btn {
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid transparent;
+      border-bottom: 0;
+      border-radius: 10px 10px 0 0;
+      padding: 10px 14px;
+      white-space: nowrap;
+    }
+    .tab-btn.active {
+      color: var(--accent);
+      background: var(--accent-soft);
+      border-color: var(--line);
+      font-weight: 700;
+    }
+
+    .tab-panel { display: none; padding: 18px; }
+    .tab-panel.active { display: block; }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    @media (max-width: 720px) {
+      .grid-2 { grid-template-columns: 1fr; }
+    }
+
+    .field { margin-bottom: 12px; }
+
+    .form-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 8px;
+      align-items: center;
+    }
+
+    .hint {
+      color: var(--muted);
+      font-size: 0.92rem;
+      margin: 0 0 14px;
+      line-height: 1.4;
+    }
+
+    .alert {
+      padding: 12px 14px;
+      border-radius: 10px;
+      margin: 12px 0;
+      border: 1px solid var(--line);
+      line-height: 1.4;
+    }
+    .alert.error { background: #fdecec; border-color: #f0c4c4; color: var(--danger); }
+    .alert.info { background: var(--accent-soft); border-color: #b7d9d1; color: var(--accent); }
+    .alert.warn { background: #fff6e8; border-color: #f0d4a4; color: var(--warn); }
+
+    .loading {
+      display: none;
+      margin-top: 14px;
+      padding: 14px;
+      border-radius: 12px;
+      background: var(--accent-soft);
+      border: 1px solid #b7d9d1;
+    }
+    .loading.show { display: block; }
+    .spinner {
+      width: 18px; height: 18px;
+      border: 2px solid #9ec9bf;
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      display: inline-block;
+      animation: spin .8s linear infinite;
+      vertical-align: -3px;
+      margin-right: 8px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .results { margin-top: 18px; display: none; }
+    .results.show { display: block; }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    @media (max-width: 800px) {
+      .metrics { grid-template-columns: 1fr 1fr; }
+    }
+    .metric {
+      background: #f8faf9;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px;
+    }
+    .metric .k { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+    .metric .v { font-size: 1.25rem; font-weight: 700; margin-top: 4px; }
+    .metric .v.pass { color: var(--ok); }
+    .metric .v.fail { color: var(--danger); }
+
+    .subtabs {
+      display: flex;
+      gap: 6px;
+      margin: 8px 0 12px;
+      flex-wrap: wrap;
+    }
+    .subtab {
+      background: #f3f6f4;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      padding: 8px 12px;
+      border-radius: 999px;
+      font-size: 0.9rem;
+    }
+    .subtab.active {
+      background: var(--ink);
+      color: #fff;
+      border-color: var(--ink);
+    }
+
+    .subpanel { display: none; }
+    .subpanel.active { display: block; }
+
+    .content-box {
+      background: #fbfcfb;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 16px;
+      white-space: pre-wrap;
+      line-height: 1.55;
+      max-height: 560px;
+      overflow: auto;
+      font-size: 0.96rem;
+    }
+
+    .dim-row { margin: 10px 0; }
+    .dim-label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.9rem;
+      margin-bottom: 4px;
+    }
+    .bar {
+      height: 8px;
+      background: #e6ece9;
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .bar > span {
+      display: block;
+      height: 100%;
+      background: linear-gradient(90deg, #1f8a78, #0f6b5c);
+      border-radius: 999px;
+    }
+
+    .list {
+      margin: 0;
+      padding-left: 18px;
+      line-height: 1.5;
+    }
+    .list.good li::marker { color: var(--ok); }
+    .list.bad li::marker { color: var(--warn); }
+
+    .meta-grid {
+      display: grid;
+      grid-template-columns: 140px 1fr;
+      gap: 8px 12px;
+      font-size: 0.95rem;
+    }
+    .meta-grid .k { color: var(--muted); }
+    .meta-grid .v { word-break: break-word; }
+    .slug {
+      font-family: var(--mono);
+      font-size: 0.86rem;
+      background: #eef6f3;
+      color: var(--accent);
+      padding: 2px 8px;
+      border-radius: 6px;
+      display: inline-block;
+    }
+
+    .settings.hidden { display: none; }
+    footer.note {
+      margin-top: 18px;
+      color: var(--muted);
+      font-size: 0.85rem;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="hero">
+      <div class="brand-block">
+        <h1>Editorial Intelligence</h1>
+        <p>Run the multi-agent content pipeline from this page. No Streamlit required — just start the API and generate.</p>
+      </div>
+      <div class="status-chip" id="healthChip">
+        <span class="dot" id="healthDot"></span>
+        <span id="healthText">Checking API…</span>
+      </div>
+    </header>
+
+    <div class="panel">
+      <div class="settings" id="settingsBar">
+        <button class="btn-ghost" type="button" id="btnHealth">Check connection</button>
+        <button class="btn-ghost" type="button" id="btnBrands">Reload brands</button>
+      </div>
+
+      <div class="tabs" role="tablist">
+        <button class="tab-btn active" data-tab="auto" type="button">Auto</button>
+        <button class="tab-btn" data-tab="content" type="button">Content</button>
+        <button class="tab-btn" data-tab="email" type="button">Email</button>
+        <button class="tab-btn" data-tab="seo" type="button">SEO</button>
+        <button class="tab-btn" data-tab="social" type="button">Social</button>
+      </div>
+
+      <!-- AUTO -->
+      <section class="tab-panel active" id="tab-auto">
+        <p class="hint">Detects content / email / SEO / social from your prompt, then runs the matching workflow.</p>
+        <div class="field">
+          <label for="a_input">Prompt *</label>
+          <textarea id="a_input" placeholder="Write a blog on AI workflow automation, create a LinkedIn post, generate an email campaign…"></textarea>
+        </div>
+        <div class="grid-2">
+          <div class="field">
+            <label for="a_brand">Brand</label>
+            <select id="a_brand"></select>
+          </div>
+          <div class="field">
+            <label for="a_lang">Language</label>
+            <select id="a_lang"><option>English</option><option>Hindi</option></select>
+          </div>
+        </div>
+        <div class="field">
+          <label for="a_instr">Additional instructions</label>
+          <input id="a_instr" type="text" placeholder="Optional guidance…" />
+        </div>
+        <div class="field" style="max-width:180px">
+          <label for="a_rev">Max revisions</label>
+          <input id="a_rev" type="number" min="1" max="5" value="3" />
+        </div>
+        <div class="form-actions">
+          <button class="btn-primary" type="button" data-run="auto">Generate</button>
+        </div>
+      </section>
+
+      <!-- CONTENT -->
+      <section class="tab-panel" id="tab-content">
+        <p class="hint">Long-form article (~2200 words) or blog (~1800 words) via Manager → Research → Strategy → Writer → Review.</p>
+        <div class="field">
+          <label for="c_input">Topic / brief *</label>
+          <textarea id="c_input" placeholder="How AI agents are transforming SMB operations"></textarea>
+        </div>
+        <div class="grid-2">
+          <div class="field">
+            <label for="c_type">Content type</label>
+            <select id="c_type"><option>article</option><option>blog</option></select>
+          </div>
+          <div class="field">
+            <label for="c_brand">Brand</label>
+            <select id="c_brand"></select>
+          </div>
+          <div class="field">
+            <label for="c_obj">Objective</label>
+            <select id="c_obj"><option>seo</option><option>authority</option><option>engagement</option><option>leads</option></select>
+          </div>
+          <div class="field">
+            <label for="c_lang">Language</label>
+            <select id="c_lang"><option>English</option><option>Hindi</option></select>
+          </div>
+        </div>
+        <div class="field">
+          <label for="c_instr">Additional instructions</label>
+          <input id="c_instr" type="text" placeholder="Focus on ROI examples…" />
+        </div>
+        <div class="field" style="max-width:180px">
+          <label for="c_rev">Max revisions</label>
+          <input id="c_rev" type="number" min="1" max="5" value="3" />
+        </div>
+        <div class="form-actions">
+          <button class="btn-primary" type="button" data-run="content">Generate content</button>
+        </div>
+      </section>
+
+      <!-- EMAIL -->
+      <section class="tab-panel" id="tab-email">
+        <p class="hint">Newsletter, nurture, promotional, or transactional email.</p>
+        <div class="field">
+          <label for="e_input">Topic / brief *</label>
+          <textarea id="e_input" placeholder="Announce our new AI audit service to founders"></textarea>
+        </div>
+        <div class="grid-2">
+          <div class="field">
+            <label for="e_brand">Brand</label>
+            <select id="e_brand"></select>
+          </div>
+          <div class="field">
+            <label for="e_campaign">Campaign type</label>
+            <select id="e_campaign">
+              <option>newsletter</option><option>nurture</option>
+              <option>promotional</option><option>transactional</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="e_obj">Objective</label>
+            <select id="e_obj"><option>leads</option><option>engagement</option></select>
+          </div>
+          <div class="field">
+            <label for="e_lang">Language</label>
+            <select id="e_lang"><option>English</option><option>Hindi</option></select>
+          </div>
+        </div>
+        <div class="field">
+          <label for="e_instr">Additional instructions</label>
+          <input id="e_instr" type="text" />
+        </div>
+        <div class="field" style="max-width:180px">
+          <label for="e_rev">Max revisions</label>
+          <input id="e_rev" type="number" min="1" max="4" value="2" />
+        </div>
+        <div class="form-actions">
+          <button class="btn-primary" type="button" data-run="email">Generate email</button>
+        </div>
+      </section>
+
+      <!-- SEO -->
+      <section class="tab-panel" id="tab-seo">
+        <p class="hint">SEO-optimised long-form plus keyword / technical analysis when returned by the API.</p>
+        <div class="field">
+          <label for="s_input">Search query / topic *</label>
+          <textarea id="s_input" placeholder="AI agents for small business automation"></textarea>
+        </div>
+        <div class="grid-2">
+          <div class="field">
+            <label for="s_type">Content type</label>
+            <select id="s_type"><option>article</option><option>blog</option></select>
+          </div>
+          <div class="field">
+            <label for="s_brand">Brand</label>
+            <select id="s_brand"></select>
+          </div>
+          <div class="field">
+            <label for="s_lang">Language</label>
+            <select id="s_lang"><option>English</option><option>Hindi</option></select>
+          </div>
+          <div class="field">
+            <label for="s_rev">Max revisions</label>
+            <input id="s_rev" type="number" min="1" max="5" value="3" />
+          </div>
+        </div>
+        <div class="field">
+          <label for="s_instr">Additional instructions</label>
+          <input id="s_instr" type="text" />
+        </div>
+        <div class="form-actions">
+          <button class="btn-primary" type="button" data-run="seo">Generate SEO content</button>
+        </div>
+      </section>
+
+      <!-- SOCIAL -->
+      <section class="tab-panel" id="tab-social">
+        <p class="hint">LinkedIn posts, carousels, or X threads.</p>
+        <div class="field">
+          <label for="so_input">Topic / brief *</label>
+          <textarea id="so_input" placeholder="Why AI agents are the next competitive advantage for SMBs"></textarea>
+        </div>
+        <div class="grid-2">
+          <div class="field">
+            <label for="so_platform">Platform</label>
+            <select id="so_platform"><option>linkedin</option><option>carousel</option><option>x</option></select>
+          </div>
+          <div class="field">
+            <label for="so_brand">Brand</label>
+            <select id="so_brand"></select>
+          </div>
+          <div class="field">
+            <label for="so_obj">Objective</label>
+            <select id="so_obj"><option>engagement</option><option>authority</option><option>leads</option></select>
+          </div>
+          <div class="field">
+            <label for="so_lang">Language</label>
+            <select id="so_lang"><option>English</option><option>Hindi</option></select>
+          </div>
+        </div>
+        <div class="field">
+          <label for="so_instr">Additional instructions</label>
+          <input id="so_instr" type="text" />
+        </div>
+        <div class="field" style="max-width:180px">
+          <label for="so_rev">Max revisions</label>
+          <input id="so_rev" type="number" min="1" max="4" value="2" />
+        </div>
+        <div class="form-actions">
+          <button class="btn-primary" type="button" data-run="social">Generate social post</button>
+        </div>
+      </section>
+
+      <div class="loading" id="loading">
+        <span class="spinner"></span>
+        <strong>Running multi-agent pipeline…</strong>
+        <div style="margin-top:6px;color:var(--muted);font-size:0.92rem">
+          Research → Strategy → Writer → Review can take several minutes. Keep this tab open.
+        </div>
+      </div>
+
+      <div id="errorBox"></div>
+
+      <div class="results" id="results">
+        <div class="metrics" id="metrics"></div>
+        <div class="subtabs">
+          <button class="subtab active" type="button" data-sub="content">Content</button>
+          <button class="subtab" type="button" data-sub="review">Review</button>
+          <button class="subtab" type="button" data-sub="metadata">Metadata</button>
+          <button class="subtab" type="button" data-sub="extra">Extra</button>
+        </div>
+        <div class="subpanel active" id="sub-content">
+          <div class="form-actions" style="margin-bottom:10px">
+            <button class="btn-ghost" type="button" id="btnCopy">Copy markdown</button>
+            <button class="btn-ghost" type="button" id="btnDownload">Download .md</button>
+          </div>
+          <div class="content-box" id="contentOut"></div>
+        </div>
+        <div class="subpanel" id="sub-review"></div>
+        <div class="subpanel" id="sub-metadata"></div>
+        <div class="subpanel" id="sub-extra"></div>
+      </div>
+    </div>
+
+    <footer class="note">
+      Purpose: help readers learn and solve real problems — not chase empty views.
+    </footer>
+  </div>
+
+  <script>
+    const $ = (sel) => document.querySelector(sel);
+    const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+
+    const state = {
+      sessionId: localStorage.getItem("eis_session") || crypto.randomUUID(),
+      brands: [],
+      lastResult: null,
+      lastMarkdown: "",
+    };
+    localStorage.setItem("eis_session", state.sessionId);
+
+    const API_BASE_URL = "http://54.218.34.106:9000";
+
+    function apiBase() {
+      return API_BASE_URL;
+    }
+
+    function setHealth(ok, text) {
+      $("#healthDot").className = "dot " + (ok ? "ok" : "bad");
+      $("#healthText").textContent = text;
+    }
+
+    function brandValue(selectId) {
+      const v = $(selectId).value;
+      return (!v || v === "Auto-detect") ? null : v;
+    }
+
+    function fillBrandSelects(brands) {
+      const names = ["Auto-detect", ...brands.map(b => b.display_name || b.name || b.namespace).filter(Boolean)];
+      ["#a_brand", "#c_brand", "#e_brand", "#s_brand", "#so_brand"].forEach(id => {
+        const el = $(id);
+        const prev = el.value;
+        el.innerHTML = names.map(n => `<option value="${n}">${n}</option>`).join("");
+        if (names.includes(prev)) el.value = prev;
+      });
+    }
+
+    async function checkHealth() {
+      try {
+        const res = await fetch(apiBase() + "/api/health", { method: "GET" });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+        setHealth(true, `${data.app_name || "API"} · ${data.status || "ok"}`);
+        return true;
+      } catch (err) {
+        setHealth(false, "API offline — server unreachable");
+        return false;
+      }
+    }
+
+    async function loadBrands() {
+      try {
+        const res = await fetch(apiBase() + "/api/brands");
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+        state.brands = data.brands || [];
+        fillBrandSelects(state.brands);
+      } catch (_) {
+        fillBrandSelects([
+          { display_name: "Futuristix" },
+          { display_name: "GTIB" },
+          { display_name: "Kinvo" },
+          { display_name: "MPM" },
+          { display_name: "GCB" },
+        ]);
+      }
+    }
+
+    function showError(msg) {
+      $("#errorBox").innerHTML = msg
+        ? `<div class="alert error">${escapeHtml(msg)}</div>`
+        : "";
+    }
+
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function getMarkdown(result) {
+      const final = result.final_output || {};
+      const content = final.content;
+      if (content && typeof content === "object") return content.markdown || "";
+      if (typeof content === "string") return content;
+      return "";
+    }
+
+    function buildPayload(kind) {
+      if (kind === "auto") {
+        return {
+          endpoint: "generate",
+          body: {
+            user_input: $("#a_input").value.trim(),
+            brand: brandValue("#a_brand"),
+            language: $("#a_lang").value,
+            additional_instructions: $("#a_instr").value,
+            session_id: state.sessionId,
+            max_revisions: Number($("#a_rev").value) || 3,
+          },
+        };
+      }
+      if (kind === "content") {
+        return {
+          endpoint: "generate/content",
+          body: {
+            user_input: $("#c_input").value.trim(),
+            content_type: $("#c_type").value,
+            brand: brandValue("#c_brand"),
+            objective: $("#c_obj").value,
+            language: $("#c_lang").value,
+            additional_instructions: $("#c_instr").value,
+            session_id: state.sessionId,
+            max_revisions: Number($("#c_rev").value) || 3,
+          },
+        };
+      }
+      if (kind === "email") {
+        return {
+          endpoint: "generate/email",
+          body: {
+            user_input: $("#e_input").value.trim(),
+            brand: brandValue("#e_brand"),
+            campaign_type: $("#e_campaign").value,
+            objective: $("#e_obj").value,
+            language: $("#e_lang").value,
+            additional_instructions: $("#e_instr").value,
+            session_id: state.sessionId,
+            max_revisions: Number($("#e_rev").value) || 2,
+          },
+        };
+      }
+      if (kind === "seo") {
+        return {
+          endpoint: "generate/seo",
+          body: {
+            user_input: $("#s_input").value.trim(),
+            content_type: $("#s_type").value,
+            brand: brandValue("#s_brand"),
+            language: $("#s_lang").value,
+            additional_instructions: $("#s_instr").value,
+            session_id: state.sessionId,
+            max_revisions: Number($("#s_rev").value) || 3,
+          },
+        };
+      }
+      return {
+        endpoint: "generate/social",
+        body: {
+          user_input: $("#so_input").value.trim(),
+          platform: $("#so_platform").value,
+          brand: brandValue("#so_brand"),
+          objective: $("#so_obj").value,
+          language: $("#so_lang").value,
+          additional_instructions: $("#so_instr").value,
+          session_id: state.sessionId,
+          max_revisions: Number($("#so_rev").value) || 2,
+        },
+      };
+    }
+
+    async function runWorkflow(kind) {
+      const { endpoint, body } = buildPayload(kind);
+      if (!body.user_input || body.user_input.length < 3) {
+        showError("Please enter a topic or prompt (at least 3 characters).");
+        return;
+      }
+
+      showError("");
+      $("#results").classList.remove("show");
+      $("#loading").classList.add("show");
+      $$("button[data-run]").forEach(b => b.disabled = true);
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 900000); // 15 min
+
+      try {
+        const res = await fetch(apiBase() + "/api/" + endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+        let data;
+        try {
+          data = await res.json();
+        } catch (_) {
+          throw new Error("API returned a non-JSON response (HTTP " + res.status + ")");
+        }
+        if (!res.ok) {
+          const detail = data.detail || data.error || JSON.stringify(data);
+          throw new Error("API error " + res.status + ": " + detail);
+        }
+        if (data.ok === false && (data.errors || []).length) {
+          throw new Error((data.errors || []).join("; "));
+        }
+        renderResult(data, kind);
+      } catch (err) {
+        const msg = err.name === "AbortError"
+          ? "Request timed out after 15 minutes. The workflow may still be running on the server."
+          : (err.message || String(err));
+        showError(msg);
+      } finally {
+        clearTimeout(timeout);
+        $("#loading").classList.remove("show");
+        $$("button[data-run]").forEach(b => b.disabled = false);
+      }
+    }
+
+    function renderResult(result, kind) {
+      state.lastResult = result;
+      state.lastMarkdown = getMarkdown(result);
+      $("#results").classList.add("show");
+
+      const review = result.review || {};
+      const meta = result.metadata || {};
+      const score = review.score ?? 0;
+      const status = review.status || "—";
+      const statusClass = String(status).toUpperCase() === "PASS" ? "pass" : "fail";
+
+      $("#metrics").innerHTML = `
+        <div class="metric"><div class="k">Score</div><div class="v">${score} / 100</div></div>
+        <div class="metric"><div class="k">Status</div><div class="v ${statusClass}">${escapeHtml(status)}</div></div>
+        <div class="metric"><div class="k">Revisions</div><div class="v">${result.revision_count ?? 0}</div></div>
+        <div class="metric"><div class="k">Words</div><div class="v">${meta.word_count ?? "—"}</div></div>
+      `;
+
+      $("#contentOut").textContent = state.lastMarkdown || "(No markdown content in response)";
+
+      // Review panel
+      const dims = review.dimension_scores || {};
+      let dimHtml = Object.keys(dims).length
+        ? Object.entries(dims).map(([k, v]) => {
+            const val = Number(v) || 0;
+              return `<div class="dim-row">
+              <div class="dim-label"><span>${escapeHtml(String(k).replace(/_/g, " "))}</span><span>${val}/100</span></div>
+              <div class="bar"><span style="width:${Math.min(100, Math.max(0, val))}%"></span></div>
+            </div>`;
+          }).join("")
+        : "<p class='hint'>No dimension scores.</p>";
+
+      const feedback = (review.feedback || []).map(f => `<li>${escapeHtml(f)}</li>`).join("") || "<li>None</li>";
+      const issues = (review.issues || []).map(f => `<li>${escapeHtml(f)}</li>`).join("") || "<li>None</li>";
+
+      $("#sub-review").innerHTML = `
+        <h3 style="margin:0 0 10px">Dimension scores</h3>
+        ${dimHtml}
+        <h3 style="margin:16px 0 8px">Positive feedback</h3>
+        <ul class="list good">${feedback}</ul>
+        <h3 style="margin:16px 0 8px">Issues</h3>
+        <ul class="list bad">${issues}</ul>
+      `;
+
+      // Metadata
+      const seo = (result.final_output || {}).seo || {};
+      const readTime = meta.read_time_min ?? meta.reading_time_minutes ?? "—";
+      $("#sub-metadata").innerHTML = `
+        <div class="meta-grid">
+          <div class="k">Word count</div><div class="v">${meta.word_count ?? "—"}</div>
+          <div class="k">Read time</div><div class="v">${readTime} min</div>
+          <div class="k">Language</div><div class="v">${escapeHtml(meta.language || "—")}</div>
+          <div class="k">Meta title</div><div class="v">${escapeHtml(seo.meta_title || "—")}</div>
+          <div class="k">Meta description</div><div class="v">${escapeHtml(seo.meta_description || "—")}</div>
+          <div class="k">Slug</div><div class="v"><span class="slug">${escapeHtml(seo.slug || "—")}</span></div>
+          <div class="k">Search intent</div><div class="v">${escapeHtml(seo.search_intent || "—")}</div>
+          <div class="k">Primary keywords</div><div class="v">${escapeHtml((seo.primary_keywords || []).slice(0, 6).join(", ") || "—")}</div>
+          <div class="k">Request ID</div><div class="v">${escapeHtml(result.request_id || "—")}</div>
+        </div>
+      `;
+
+      // Extra (email / seo / social / auto workflow)
+      let extra = "";
+      if (kind === "auto" && meta.workflow) {
+        extra += `<div class="alert info">Detected workflow: <strong>${escapeHtml(meta.workflow)}</strong></div>`;
+      }
+      if (result.email_meta && Object.keys(result.email_meta).length) {
+        extra += `<h3>Email meta</h3><pre class="content-box">${escapeHtml(JSON.stringify(result.email_meta, null, 2))}</pre>`;
+      }
+      if (result.seo_analysis && Object.keys(result.seo_analysis).length) {
+        extra += `<h3>SEO analysis</h3><pre class="content-box">${escapeHtml(JSON.stringify(result.seo_analysis, null, 2))}</pre>`;
+      }
+      if (result.social_meta && Object.keys(result.social_meta).length) {
+        extra += `<h3>Social meta</h3><pre class="content-box">${escapeHtml(JSON.stringify(result.social_meta, null, 2))}</pre>`;
+      }
+      if (!extra) extra = `<p class="hint">No workflow-specific extras for this run.</p>`;
+      $("#sub-extra").innerHTML = extra;
+
+      // show content subtab
+      $$(".subtab").forEach(b => b.classList.toggle("active", b.dataset.sub === "content"));
+      $$(".subpanel").forEach(p => p.classList.toggle("active", p.id === "sub-content"));
+      $("#results").scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    // Tabs
+    $$(".tab-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        $$(".tab-btn").forEach(b => b.classList.remove("active"));
+        $$(".tab-panel").forEach(p => p.classList.remove("active"));
+        btn.classList.add("active");
+        $("#tab-" + btn.dataset.tab).classList.add("active");
+      });
+    });
+
+    $$(".subtab").forEach(btn => {
+      btn.addEventListener("click", () => {
+        $$(".subtab").forEach(b => b.classList.remove("active"));
+        $$(".subpanel").forEach(p => p.classList.remove("active"));
+        btn.classList.add("active");
+        $("#sub-" + btn.dataset.sub).classList.add("active");
+      });
+    });
+
+    $$("button[data-run]").forEach(btn => {
+      btn.addEventListener("click", () => runWorkflow(btn.dataset.run));
+    });
+
+    $("#btnHealth").addEventListener("click", checkHealth);
+    $("#btnBrands").addEventListener("click", loadBrands);
+
+    $("#btnCopy").addEventListener("click", async () => {
+      if (!state.lastMarkdown) return;
+      try {
+        await navigator.clipboard.writeText(state.lastMarkdown);
+        showError("");
+        $("#errorBox").innerHTML = `<div class="alert info">Markdown copied to clipboard.</div>`;
+      } catch (_) {
+        showError("Could not copy automatically. Select the content and copy manually.");
+      }
+    });
+
+    $("#btnDownload").addEventListener("click", () => {
+      if (!state.lastMarkdown) return;
+      const blob = new Blob([state.lastMarkdown], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "generated-content.md";
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    // Boot
+    fillBrandSelects([]);
+    checkHealth().then(loadBrands);
+  </script>
+</body>
+</html>
