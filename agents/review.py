@@ -5,6 +5,7 @@ Review Agent
 Evaluates the content draft produced by the Writer Agent.
 
 Responsibilities:
+    - Safety fallback: discard any abusive / off-policy / inverted draft
     - Run ReviewService to score the draft across five dimensions
     - Enforce the maximum revision limit (settings.MAX_REVIEW_ITERATIONS)
     - If PASS  → mark workflow COMPLETED, route to END
@@ -12,13 +13,15 @@ Responsibilities:
                  into strategy, route back to the Writer Agent
     - Update shared state with the review result
 
-The Review Agent does not generate or modify content.
+The Review Agent does not generate or modify content (except discarding
+unsafe output).
 """
 
 import logging
 
 from schemas.state import ContentState
 from services.review_service import ReviewService, PASS_THRESHOLD
+from services.safety_service import safety_service
 
 from config.settings import settings
 
@@ -28,21 +31,73 @@ review_service = ReviewService()
 
 
 def review_node(state: ContentState) -> ContentState:
-    """Evaluate the draft and decide: revise or complete."""
+    """Evaluate the draft and decide: discard, revise, or complete."""
     logger.info(
         "review_node() | revision_count=%d | max=%d",
         state.get("revision_count", 0),
         state.get("max_revision_count", settings.MAX_REVIEW_ITERATIONS),
     )
 
-    draft = state["draft"]
+    draft = state.get("draft") or ""
+
+    # ------------------------------------------------------------------
+    # Safety fallback — discard completely if draft is unsafe / inverted
+    # ------------------------------------------------------------------
+    draft_safety = safety_service.evaluate_draft(
+        draft,
+        primary_topic=state.get("primary_topic") or "",
+        user_input=state.get("user_input") or "",
+        request_id=state.get("request_id", ""),
+        session_id=state.get("session_id", ""),
+        brand=state.get("brand"),
+        content_type=state.get("content_type", ""),
+        source="review",
+    )
+    if draft_safety.get("blocked"):
+        msg = draft_safety.get("message") or (
+            "Generated content was discarded because it violated content policy."
+        )
+        state["draft"] = ""
+        state["metadata"] = {}
+        state["formatted_output"] = {}
+        state["final_output"] = {}
+        state["workflow_status"] = "BLOCKED"
+        state["current_agent"] = "review"
+        state["next_agent"] = "end"
+        state["errors"] = list(state.get("errors") or []) + [msg]
+        state["safety"] = {
+            **(state.get("safety") or {}),
+            "allowed": False,
+            "blocked": True,
+            "category": draft_safety.get("category", "draft_blocked"),
+            "reason": draft_safety.get("reason", ""),
+            "message": msg,
+            "discarded_at": "review",
+        }
+        state["review"] = {
+            "score": 0,
+            "status": "BLOCKED",
+            "needs_revision": False,
+            "feedback": [],
+            "issues": [draft_safety.get("reason") or "Policy violation in draft"],
+            "rewrite_instruction": "",
+            "dimension_scores": {},
+            "revision_number": state.get("revision_count", 0),
+        }
+        logger.warning(
+            "review_node DISCARDED draft | category=%s | reason=%s",
+            draft_safety.get("category"),
+            draft_safety.get("reason"),
+        )
+        return state
+
     strategy = state["strategy"]
     brand_context = state["brand_context"]
     revision_count = state.get("revision_count", 0)
     max_revisions = state.get("max_revision_count", settings.MAX_REVIEW_ITERATIONS)
 
     # ------------------------------------------------------------------
-    # Run the review
+    # Run the quality review
     # ------------------------------------------------------------------
     review = review_service.run(
         draft=draft,
@@ -50,6 +105,42 @@ def review_node(state: ContentState) -> ContentState:
         brand_context=brand_context,
         revision_count=revision_count,
     )
+
+    # Word-count adherence when user requested a target
+    constraints = state.get("user_constraints") or {}
+    target = constraints.get("target_word_count")
+    if target:
+        actual = len(draft.split())
+        flexible = constraints.get("word_count_flexible", True)
+        # Tight for short asks; ±15% for longer
+        if int(target) <= 50:
+            lo, hi = max(1, int(target) - 2), int(target) + 2
+        elif flexible:
+            lo, hi = int(target * 0.85), int(target * 1.15)
+        else:
+            lo, hi = int(target * 0.95), int(target * 1.05)
+        if actual < lo or actual > hi:
+            review["issues"] = list(review.get("issues") or [])
+            review["issues"].append(
+                f"Word count {actual} is outside the user-requested target "
+                f"of ~{target} words (acceptable {lo}-{hi})."
+            )
+            if review.get("needs_revision") or revision_count < max_revisions:
+                review["needs_revision"] = True
+                review["status"] = "FAIL"
+                review["rewrite_instruction"] = (
+                    (review.get("rewrite_instruction") or "").strip()
+                    + f"\nAdjust length to approximately {target} words "
+                    f"(current ~{actual}). Do not change the primary topic."
+                ).strip()
+
+    # Topic fidelity reminder in rewrite instructions
+    primary = (state.get("primary_topic") or "").strip()
+    if review.get("needs_revision") and primary:
+        review["rewrite_instruction"] = (
+            (review.get("rewrite_instruction") or "").strip()
+            + f"\nStay strictly on this primary topic (do not invert roles or change subject): {primary}"
+        ).strip()
 
     # ------------------------------------------------------------------
     # Enforce maximum revision limit
@@ -74,29 +165,19 @@ def review_node(state: ContentState) -> ContentState:
     # ------------------------------------------------------------------
     if review["needs_revision"]:
         state["revision_count"] = revision_count + 1
-
-        # Inject the rewrite instruction into strategy so WriterService
-        # can adapt its prompts on the next run.
         state["strategy"]["rewrite_instruction"] = review["rewrite_instruction"]
-
         state["current_agent"] = "review"
         state["next_agent"] = "writer"
-
         logger.info(
             "Review FAIL | score=%d | sending back to writer (revision %d of %d)",
             review["score"],
             state["revision_count"],
             max_revisions,
         )
-
-    # ------------------------------------------------------------------
-    # Route: PASS → complete the workflow
-    # ------------------------------------------------------------------
     else:
         state["workflow_status"] = "COMPLETED"
         state["current_agent"] = "review"
         state["next_agent"] = "end"
-
         logger.info(
             "Review PASS | score=%d | workflow complete",
             review["score"],
