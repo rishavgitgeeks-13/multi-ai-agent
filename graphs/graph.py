@@ -7,16 +7,19 @@ Workflow:
 START
     ↓
 Manager
-    ↓
-Research
-    ↓
-Strategy
-    ↓
-Writer
-    ↓
-Review
-    ├── PASS → END
-    └── FAIL → Writer
+    ├── BLOCKED → END
+    └── PASS
+         ↓
+      Research
+         ↓
+      Strategy
+         ↓
+      Writer
+         ↓
+      Review
+         ├── PASS → END
+         ├── SAFETY FAIL → discard → END
+         └── QUALITY FAIL → Writer
 """
 
 from langgraph.graph import StateGraph, START, END
@@ -28,7 +31,7 @@ from agents.research import research_node
 from agents.strategy import strategy_node
 from agents.writer import writer_node
 from agents.review import review_node
-from graphs.routing import review_router
+from graphs.routing import manager_router, writer_router, review_router
 
 
 builder = StateGraph(ContentState)
@@ -42,12 +45,26 @@ builder.add_node("review", review_node)
 
 # Define workflow execution.
 builder.add_edge(START, "manager")
-builder.add_edge("manager", "research")
+builder.add_conditional_edges(
+    "manager",
+    manager_router,
+    {
+        "research": "research",
+        END: END,
+    },
+)
 builder.add_edge("research", "strategy")
 builder.add_edge("strategy", "writer")
-builder.add_edge("writer", "review")
+builder.add_conditional_edges(
+    "writer",
+    writer_router,
+    {
+        "review": "review",
+        END: END,
+    },
+)
 
-# Review decides whether to finish or rewrite.
+# Review decides whether to finish, discard, or rewrite.
 builder.add_conditional_edges(
     "review",
     review_router,
