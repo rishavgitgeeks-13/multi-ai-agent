@@ -14,15 +14,16 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # PASS threshold — must match ReviewService.PASS_THRESHOLD
-PASS_THRESHOLD = 70
+PASS_THRESHOLD = 95
 
 # Dimension weights — must match ReviewService.DIMENSION_WEIGHTS
 DIMENSION_WEIGHTS: Dict[str, float] = {
-    "content_quality": 0.25,
+    "content_quality": 0.20,
     "seo_compliance": 0.25,
     "brand_alignment": 0.20,
-    "structure": 0.20,
-    "cta_effectiveness": 0.10,
+    "structure": 0.15,
+    "factual_grounding": 0.15,
+    "cta_effectiveness": 0.05,
 }
 
 
@@ -36,21 +37,24 @@ class DimensionScores(BaseModel):
     Per-dimension scores (0–100) from the LLM evaluation.
 
     Weights applied to produce the final composite score:
-      content_quality   25%
-      seo_compliance    25%
-      brand_alignment   20%
-      structure         20%
-      cta_effectiveness 10%
+      content_quality    20%
+      seo_compliance     25%
+      brand_alignment    20%
+      structure          15%
+      factual_grounding  15%
+      cta_effectiveness   5%
     """
 
     content_quality: int = Field(default=0, ge=0, le=100)
-    """Depth, clarity, value, and factual grounding."""
+    """Depth, clarity, and value."""
     seo_compliance: int = Field(default=0, ge=0, le=100)
     """Keyword density, heading coverage, meta field quality."""
     brand_alignment: int = Field(default=0, ge=0, le=100)
     """Tone match, audience fit, pain points addressed."""
     structure: int = Field(default=0, ge=0, le=100)
     """Intro / body / conclusion flow and heading hierarchy."""
+    factual_grounding: int = Field(default=0, ge=0, le=100)
+    """Attributed statistics, citations, and absence of unsupported claims."""
     cta_effectiveness: int = Field(default=0, ge=0, le=100)
     """CTA clarity, specificity, and intent alignment."""
 
@@ -81,7 +85,7 @@ class ReviewResult(BaseModel):
     """
 
     score: int = Field(default=0, ge=0, le=100)
-    """Weighted composite score (0–100). PASS if >= 70."""
+    """Weighted composite score (0–100). PASS if >= 95."""
     status: Literal["PASS", "FAIL"] = "FAIL"
     needs_revision: bool = True
 
