@@ -336,7 +336,8 @@ class JSONValidator:
         required_dims = {
             "content_quality", "seo_compliance",
             "brand_alignment", "structure",
-            "factual_grounding", "cta_effectiveness",
+            "factual_grounding", "natural_voice",
+            "cta_effectiveness",
         }
 
         # Validate dimension_scores
