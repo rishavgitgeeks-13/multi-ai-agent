@@ -50,7 +50,7 @@ from schemas.strategy_schema import Strategy
 logger = logging.getLogger(__name__)
 
 # PASS threshold — must match ReviewService and review_schema
-_PASS_THRESHOLD = 70
+_PASS_THRESHOLD = 95
 
 # Valid enum values for ContentState fields
 _VALID_CONTENT_TYPES = {"article", "blog", "linkedin", "email", "carousel"}
