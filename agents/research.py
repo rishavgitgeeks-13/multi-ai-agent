@@ -27,7 +27,7 @@ def research_node(state: ContentState) -> ContentState:
 
     # Retrieve research from internal and external sources.
     research_result = research_service.run(
-        query=state["user_input"],
+        query=state.get("primary_topic") or state["user_input"],
         brand_context=state["brand_context"],
     )
 
