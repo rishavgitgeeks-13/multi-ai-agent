@@ -8,6 +8,7 @@ Endpoints
 ---------
   GET  /api/health                → service health check
   GET  /api/brands                → list of all configured brands
+  GET  /  or /ui                  → single-page browser UI (frontend/index.html)
   POST /api/generate/content      → article / blog workflow
   POST /api/generate/email        → email campaign workflow
   POST /api/generate/seo          → SEO-optimised content workflow
@@ -24,11 +25,12 @@ Or via main.py:
 import logging
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Dict
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from api.routes.generate import router as generate_router
 
 from config.settings import settings
@@ -45,6 +47,9 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+_FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+_UI_INDEX = _FRONTEND_DIR / "index.html"
 
 
 # ==========================================================================
@@ -78,19 +83,22 @@ app = FastAPI(
 )
 
 # ------------------------------------------------------------------
-# CORS — allow all origins in development; restrict in production
+# CORS — allow browser UI (served /ui or file://) to call the API
 # ------------------------------------------------------------------
 
 _origins = ["*"] if settings.ENVIRONMENT == "development" else [
-    "http://localhost:8501",   # Streamlit default
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+    "http://localhost:8501",
     "http://127.0.0.1:8501",
+    "null",  # file:// pages report Origin: null
 ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_origins,
-    allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -171,10 +179,28 @@ async def list_brands() -> BrandsResponse:
 
 
 # ==========================================================================
-# Root redirect
+# Browser UI (single HTML page — no Streamlit)
 # ==========================================================================
+
+
+@app.get("/ui", include_in_schema=False)
+@app.get("/ui/", include_in_schema=False)
+async def browser_ui():
+    """Serve the single-page HTML frontend."""
+    if not _UI_INDEX.exists():
+        return JSONResponse(
+            status_code=404,
+            content={"ok": False, "error": "frontend/index.html not found"},
+        )
+    return FileResponse(_UI_INDEX, media_type="text/html; charset=utf-8")
 
 
 @app.get("/", include_in_schema=False)
 async def root():
-    return {"message": f"{settings.APP_NAME} is running. Visit /docs for the API reference."}
+    """Prefer the browser UI; fall back to a short JSON notice."""
+    if _UI_INDEX.exists():
+        return FileResponse(_UI_INDEX, media_type="text/html; charset=utf-8")
+    return {
+        "message": f"{settings.APP_NAME} is running. Visit /docs for the API reference or /ui for the web UI.",
+    }
+
