@@ -21,12 +21,10 @@ Output: List[Dict]
 Pipeline:
     1. Extract structured sources from research_data["sources"]
     2. Extract plain-text citations from research_data["citations"]
-    3. Format structured sources with a rule-based formatter
-    4. Enrich and format plain-text citations via LLM
-    5. Merge, deduplicate, and return
+    3. Format all citations with a rule-based formatter (no LLM)
+    4. Merge, deduplicate, and return
 
-This service makes one LLM call (only when plain-text citations are present).
-Structured source formatting is entirely rule-based.
+This service is entirely rule-based — no LLM calls.
 """
 
 import json
@@ -205,10 +203,10 @@ class CitationService:
             return []
 
         try:
-            return self._enrich_citations_via_llm(clean, user_input)
-        except Exception as exc:
-            logger.warning("Citation LLM enrichment failed: %s — using fallback", exc)
             return [self._wrap_plain_citation(c) for c in clean]
+        except Exception as exc:
+            logger.warning("Citation formatting failed: %s — using empty list", exc)
+            return []
 
     def _enrich_citations_via_llm(
         self,
