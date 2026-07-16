@@ -19,7 +19,7 @@ Pipeline:
     1. Resolve content type (blog | article | linkedin | email | carousel)
     2. Resolve or generate the content outline
     3. Extract usable research context (stats, citations)
-    4a. Long-form (blog, article)  → write section-by-section, then assemble
+    4a. Long-form (blog, article)  → one-shot full draft
     4b. Short-form (linkedin, email, carousel) → write in one shot
     5. Return the Markdown draft string
 
@@ -126,6 +126,7 @@ class WriterService:
         research_data: Dict,
         strategy: Dict,
         brand_context: Dict,
+        previous_draft: str = "",
     ) -> str:
         """Generate and return the full Markdown content draft."""
         logger.info("WriterService.run() | query=%s…", user_input[:80])
@@ -146,14 +147,28 @@ class WriterService:
 
         research_ctx = self._build_research_context(research_data)
         rewrite_instruction = str(strategy.get("rewrite_instruction", "")).strip()
+        primary_keywords, secondary_keywords = self._resolve_seo_keywords(strategy)
 
-        if content_type in SHORT_FORM_TYPES:
+        # On revision: surgically edit the existing draft instead of regenerating.
+        if rewrite_instruction and previous_draft.strip() and content_type in LONG_FORM_TYPES:
+            draft = self._revise_long_form(
+                previous_draft=previous_draft,
+                outline=outline,
+                research_ctx=research_ctx,
+                content_type=content_type,
+                rewrite_instruction=rewrite_instruction,
+                primary_keywords=primary_keywords,
+                secondary_keywords=secondary_keywords,
+            )
+        elif content_type in SHORT_FORM_TYPES:
             draft = self._write_short_form(
                 outline=outline,
                 research_ctx=research_ctx,
                 content_type=content_type,
                 platform=platform,
                 rewrite_instruction=rewrite_instruction,
+                primary_keywords=primary_keywords,
+                secondary_keywords=secondary_keywords,
             )
         else:
             draft = self._write_long_form(
@@ -161,6 +176,17 @@ class WriterService:
                 research_ctx=research_ctx,
                 content_type=content_type,
                 rewrite_instruction=rewrite_instruction,
+                primary_keywords=primary_keywords,
+                secondary_keywords=secondary_keywords,
+            )
+
+        # Deterministic quality boost: ensure attributed research stats are present.
+        if content_type in LONG_FORM_TYPES:
+            draft = self._enrich_factual_grounding(
+                draft=draft,
+                research_ctx=research_ctx,
+                outline=outline,
+                secondary_keywords=secondary_keywords,
             )
 
         logger.info(
@@ -276,8 +302,15 @@ class WriterService:
             else str(audience)
         )
         tone = strategy.get("tone") or brand_context.get("tone") or "professional"
-        keywords = strategy.get("keywords") or brand_context.get("keyword_direction", [])
+        primary_keywords = (
+            strategy.get("keywords")
+            or brand_context.get("keyword_direction", [])
+        )
+        secondary_keywords = strategy.get("secondary_keywords") or []
         pain_points = strategy.get("pain_points") or brand_context.get("pain_points", [])
+
+        primary_str = ", ".join(str(k) for k in primary_keywords[:3]) or "none"
+        secondary_str = ", ".join(str(k) for k in secondary_keywords[:6]) or "none"
 
         prompt = f"""Create a detailed content outline for a {content_type}.
 
@@ -286,14 +319,15 @@ BRAND           : {brand_context.get("display_name") or brand_context.get("brand
 CONTENT ANGLE   : {strategy.get("content_angle", "")}
 TONE            : {tone}
 AUDIENCE        : {audience_str}
-KEY KEYWORDS    : {", ".join(str(k) for k in keywords[:10]) or "none"}
+PRIMARY KEYWORDS: {primary_str}
+SECONDARY KEYWORDS: {secondary_str}
 PAIN POINTS     : {"; ".join(str(p) for p in pain_points[:5]) or "none"}
 CTA             : {strategy.get("cta") or brand_context.get("cta", "")}
 TARGET WORDS    : ~{target_words}
 
 Return a JSON object with this exact schema:
 {{
-  "title": "<compelling H1 title containing the primary keyword>",
+  "title": "<compelling H1 title containing the first primary keyword>",
   "content_angle": "<unique hook or angle for this piece>",
   "sections": [
     {{
@@ -308,6 +342,9 @@ Return a JSON object with this exact schema:
 Rules:
 - {n_sections} sections
 - Sections flow: problem → solution → proof → CTA
+- H1 title MUST include the first primary keyword naturally
+- At least one H2 heading should include a primary or secondary keyword
+- Assign each section 1 primary-or-secondary keyword in "keywords" (do not invent new ones)
 - Headings are benefit-driven and keyword-rich
 - Each brief is specific enough to write a full section from
 - Return ONLY the JSON object — no prose, no markdown fences
@@ -424,7 +461,9 @@ Rules:
             return (
                 "No statistics are available.\n"
                 "Do NOT invent percentages, benchmarks, revenue figures, "
-                "survey data, or numerical claims."
+                "survey data, or numerical claims.\n"
+                "Do NOT make absolute industry claims without a citation from "
+                "CITATIONS AVAILABLE; hedge or omit instead."
             )
         return "\n".join(f"- {s}" for s in selected)
 
@@ -438,36 +477,228 @@ Rules:
         research_ctx: Dict,
         content_type: str,
         rewrite_instruction: str = "",
+        primary_keywords: Optional[List[str]] = None,
+        secondary_keywords: Optional[List[str]] = None,
     ) -> str:
-        """Write introduction, body sections, and conclusion; then assemble."""
-        introduction = self._write_introduction(
-            outline=outline,
-            research_ctx=research_ctx,
-            rewrite_instruction=rewrite_instruction,
+        """Write the full long-form piece in a single LLM call (token-efficient)."""
+        target_words = WORD_COUNT_TARGETS.get(content_type, 1800)
+        primary = [str(k) for k in (primary_keywords or []) if str(k).strip()][:2]
+        secondary = [str(k) for k in (secondary_keywords or []) if str(k).strip()][:6]
+        primary_str = ", ".join(primary) or "none"
+        secondary_str = ", ".join(secondary) or "none"
+        lead_primary = primary[0] if primary else ""
+
+        citations_block = (
+            "\n".join(f"- {c}" for c in research_ctx.get("citations", [])[:8])
+            or "none"
+        )
+        stats_n = 8 if rewrite_instruction else 8
+        revision_block = ""
+        if rewrite_instruction:
+            revision_block = f"""
+CRITICAL REVISION PASS — you must apply these editor notes:
+{rewrite_instruction}
+
+Mandatory fixes for this revision (do not skip):
+- Embed at least 3 statistics from RESEARCH STATS below, each with clear attribution
+  including source name AND a concrete figure/year when present in the snippet
+  (e.g. "According to <Source> (Year): …XX%…").
+- Never invent organisation names, report titles, years, or percentages.
+- If a research snippet is vague, either quote it exactly with attribution or omit it.
+- Remove absolute uncited claims ("most startups fail…") unless they appear in stats/citations.
+- Place at least 1 secondary keyword in the introduction and 1 in the conclusion.
+- End with the exact CTA phrase: {outline.cta}
+- Every sentence must be complete — no mid-sentence cutoffs.
+- Write currency as "USD 500" / "USD 1,000" — never use the $ character.
+"""
+
+        prompt = f"""Write a complete {content_type} in Markdown.
+{revision_block}
+TITLE           : {outline.title}
+CONTENT ANGLE   : {outline.content_angle}
+AUDIENCE        : {outline.audience}
+TONE            : {outline.tone}
+CTA (use verbatim): {outline.cta}
+TARGET LENGTH   : ~{target_words} words
+PRIMARY KEYWORDS: {primary_str}
+SECONDARY KEYWORDS: {secondary_str}
+
+OUTLINE TO FOLLOW:
+{self._format_section_list(outline.sections)}
+
+RESEARCH STATS (use only these — do not invent figures):
+{self._pick_stats(research_ctx, n=stats_n)}
+
+CITATIONS AVAILABLE:
+{citations_block}
+
+SEO placement rules (mandatory):
+- Start with `# {outline.title}` — H1 must include "{lead_primary or 'the primary keyword'}"
+- Use the first primary keyword in the introduction (first 100 words)
+- Use each primary keyword at least once in body copy
+- Use at least 2 secondary keywords naturally across H2s or body (no stuffing)
+- Place at least 1 secondary keyword naturally in the introduction AND 1 in the conclusion
+- At least one `##` heading should contain a primary or secondary keyword
+
+Content rules:
+- Write a hook-driven introduction (100–150 words, no heading under the H1)
+- Cover every outline section as `##` headings (150–250 words each)
+- Complete every sentence — never stop mid-word or mid-sentence
+- End with `## Conclusion` that recaps and closes with the exact CTA: {outline.cta}
+- Prefer CTA wording like "Book an AI Discovery Call" style specificity — do not use vague "reach out today"
+- When RESEARCH STATS lists any items, embed at least 3 attributed statistics in the article body
+  (intro or early body, one mid-article, one in proof/closing). Format: "According to <Source>: <figure>…"
+- When a proof / case-study / real-world section appears in the outline, ground it with research stats or named citations above — do not use brand name alone as proof
+- Never invent percentages, benchmarks, financial figures, organisation names, or report titles
+- Do not state absolute industry claims (e.g. "most startups fail because…") unless that exact claim appears in RESEARCH STATS or CITATIONS AVAILABLE; otherwise hedge or omit
+- Write money amounts as "USD 500" or "USD 50,000" — never use the $ character (breaks Markdown renderers)
+- Match brand tone exactly throughout: {outline.tone}
+- Return ONLY Markdown — no preamble
+
+Write the complete {content_type}:
+"""
+        # 8192 avoids mid-article truncation for ~1800–2200 word pieces
+        return self._call_llm(
+            system=self._system_prompt(outline, rewrite_instruction),
+            user=prompt,
+            max_tokens=8192,
         )
 
-        section_bodies: List[str] = []
-        previous_tail = self._tail(introduction, _CONTINUITY_TAIL_WORDS)
+    def _revise_long_form(
+        self,
+        previous_draft: str,
+        outline: ContentOutline,
+        research_ctx: Dict,
+        content_type: str,
+        rewrite_instruction: str,
+        primary_keywords: Optional[List[str]] = None,
+        secondary_keywords: Optional[List[str]] = None,
+    ) -> str:
+        """Edit an existing draft against review feedback (preserve structure)."""
+        primary = [str(k) for k in (primary_keywords or []) if str(k).strip()][:2]
+        secondary = [str(k) for k in (secondary_keywords or []) if str(k).strip()][:6]
+        primary_str = ", ".join(primary) or "none"
+        secondary_str = ", ".join(secondary) or "none"
+        citations_block = (
+            "\n".join(f"- {c}" for c in research_ctx.get("citations", [])[:8])
+            or "none"
+        )
+        # Keep revision prompt within context: prefer full draft when possible.
+        draft_for_edit = previous_draft
+        if len(draft_for_edit) > 14000:
+            draft_for_edit = previous_draft[:7000] + "\n\n…\n\n" + previous_draft[-5000:]
 
-        for section in outline.sections:
-            body = self._write_section(
-                section=section,
-                outline=outline,
-                research_ctx=research_ctx,
-                previous_tail=previous_tail,
-                rewrite_instruction=rewrite_instruction,
+        prompt = f"""Revise the existing {content_type} Markdown. Do NOT rewrite from scratch.
+
+EDITOR FEEDBACK (must fix):
+{rewrite_instruction}
+
+Preserve the overall structure, headings, and voice. Make targeted edits only.
+
+BRAND TONE (exact) : {outline.tone}
+AUDIENCE           : {outline.audience}
+CTA (verbatim)     : {outline.cta}
+PRIMARY KEYWORDS   : {primary_str}
+SECONDARY KEYWORDS : {secondary_str}
+
+RESEARCH STATS (use only these — do not invent figures):
+{self._pick_stats(research_ctx, n=8)}
+
+CITATIONS AVAILABLE:
+{citations_block}
+
+Mandatory edit checklist:
+1. Insert at least 3 attributed statistics from RESEARCH STATS (named source + concrete figure).
+   Prefer placing one in the intro, one in a mid-body/proof section, and one near the conclusion.
+2. Remove or hedge absolute uncited claims; never invent org names/years/%.
+3. Place at least 1 secondary keyword naturally in the introduction AND 1 in the conclusion body
+   (not only in H2 headings).
+4. Closing CTA must use verbatim: {outline.cta}
+5. Match tone exactly: {outline.tone}
+6. Write currency as "USD 500" — never use the $ character.
+7. Complete every sentence.
+8. Keep strong existing sections; only edit what the editor feedback requires.
+
+EXISTING DRAFT:
+{draft_for_edit}
+
+Return the FULL revised Markdown article only — no preamble.
+"""
+        return self._call_llm(
+            system=self._system_prompt(outline, rewrite_instruction),
+            user=prompt,
+            max_tokens=8192,
+        )
+
+    def _enrich_factual_grounding(
+        self,
+        draft: str,
+        research_ctx: Dict,
+        outline: ContentOutline,
+        secondary_keywords: Optional[List[str]] = None,
+    ) -> str:
+        """
+        Lightweight second pass: inject attributed research stats and
+        secondary-keyword coverage without regenerating the article.
+        """
+        stats = [str(s).strip() for s in research_ctx.get("stats", []) if str(s).strip()]
+        if not draft.strip() or not stats:
+            return draft
+
+        attribution_hits = len(
+            re.findall(
+                r"According to | \(\d{4}\)|Source:|HubSpot|Gartner|CB Insights|Salesforce|McKinsey",
+                draft,
+                re.IGNORECASE,
             )
-            section_bodies.append(body)
-            previous_tail = self._tail(body, _CONTINUITY_TAIL_WORDS)
-
-        conclusion = self._write_conclusion(outline, content_type, rewrite_instruction)
-
-        return self._assemble_long_form(
-            outline=outline,
-            introduction=introduction,
-            section_bodies=section_bodies,
-            conclusion=conclusion,
         )
+        secondary = [str(k) for k in (secondary_keywords or []) if str(k).strip()][:4]
+        missing_secondary = [
+            kw for kw in secondary
+            if kw.lower() not in draft[:800].lower()
+            or kw.lower() not in draft[-900:].lower()
+        ]
+
+        # Skip enrichment when draft already looks well grounded and complete.
+        if attribution_hits >= 4 and not missing_secondary:
+            return draft
+
+        secondary_line = ", ".join(missing_secondary) if missing_secondary else "none"
+        prompt = f"""Improve factual grounding of this Markdown article with MINIMAL edits.
+
+Tone to preserve: {outline.tone}
+CTA to preserve verbatim if present: {outline.cta}
+
+RESEARCH STATS (only use these — do not invent):
+{self._pick_stats(research_ctx, n=8)}
+
+CITATIONS:
+{chr(10).join(f"- {c}" for c in research_ctx.get("citations", [])[:6]) or "none"}
+
+Required edits:
+1. Ensure at least 3 clearly attributed statistics appear (intro, mid-body or proof, near close).
+   Format: "According to <Source> (Year): <figure>…"
+2. If listed, weave these secondary keywords naturally into intro and/or conclusion: {secondary_line}
+3. Do not invent figures, organisations, or years.
+4. Do not use the $ character — write USD amounts.
+5. Keep structure/headings; return the FULL revised Markdown only.
+
+DRAFT:
+{draft[:12000]}
+"""
+        try:
+            enriched = self._call_llm(
+                system=(
+                    "You are a careful editorial reviser. Make minimal targeted edits. "
+                    "Return only the full Markdown article."
+                ),
+                user=prompt,
+                max_tokens=8192,
+            )
+            return enriched.strip() or draft
+        except Exception as exc:
+            logger.warning("Factual grounding enrichment failed (non-fatal): %s", exc)
+            return draft
 
     def _write_introduction(
         self,
@@ -611,10 +842,14 @@ Write the conclusion:
         content_type: str,
         platform: str,
         rewrite_instruction: str = "",
+        primary_keywords: Optional[List[str]] = None,
+        secondary_keywords: Optional[List[str]] = None,
     ) -> str:
         """Write the entire short-form piece in a single LLM call."""
         target_words = WORD_COUNT_TARGETS.get(content_type, 600)
         format_rules = self._format_rules(content_type, platform)
+        primary = [str(k) for k in (primary_keywords or []) if str(k).strip()][:2]
+        secondary = [str(k) for k in (secondary_keywords or []) if str(k).strip()][:4]
 
         prompt = f"""Write a complete {content_type} for {platform}.
 
@@ -624,6 +859,8 @@ AUDIENCE        : {outline.audience}
 TONE            : {outline.tone}
 CTA             : {outline.cta}
 TARGET LENGTH   : ~{target_words} words
+PRIMARY KEYWORDS: {", ".join(primary) or "none"}
+SECONDARY KEYWORDS: {", ".join(secondary) or "none"}
 
 CONTENT STRUCTURE TO COVER:
 {self._format_section_list(outline.sections)}
@@ -634,16 +871,40 @@ RELEVANT STATS:
 FORMAT REQUIREMENTS:
 {format_rules}
 
+SEO notes:
+- Include the first primary keyword early and naturally
+- Weave 1–2 secondary keywords only if they fit the platform tone
+- Do not keyword-stuff
+
 Write the complete {content_type}:
 """
         return self._call_llm(
             system=self._system_prompt(outline, rewrite_instruction),
             user=prompt,
+            max_tokens=2048,
         )
 
     # ------------------------------------------------------------------
     # Prompt helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _resolve_seo_keywords(strategy: Dict) -> tuple:
+        """Return (primary, secondary) lists from strategy / nested seo blueprint."""
+        seo = strategy.get("seo") or {}
+        primary = (
+            strategy.get("keywords")
+            or seo.get("primary_keywords")
+            or []
+        )
+        secondary = (
+            strategy.get("secondary_keywords")
+            or seo.get("secondary_keywords")
+            or []
+        )
+        primary = [str(k).strip() for k in primary if str(k).strip()]
+        secondary = [str(k).strip() for k in secondary if str(k).strip()]
+        return primary, secondary
 
     def _system_prompt(
         self,
