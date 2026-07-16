@@ -178,4 +178,3 @@ async def list_brands() -> BrandsResponse:
 @app.get("/", include_in_schema=False)
 async def root():
     return {"message": f"{settings.APP_NAME} is running. Visit /docs for the API reference."}
-
