@@ -13,7 +13,7 @@ Pipeline:
   5.  Score each keyword with semantic cosine similarity vs. user query.
   6.  Score each keyword against brand pain points (cosine similarity).
   7.  Score each keyword against brand keyword direction (cosine similarity).
-  8.  Classify search intent per keyword via LLM (batch).
+  8.  Classify search intent per keyword via heuristics (no LLM).
   9.  Compute weighted final score.
   10. Rank keywords by final score descending.
   11. Build and return the SEO Blueprint.
@@ -45,7 +45,7 @@ import os
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from anthropic import Anthropic
@@ -89,10 +89,7 @@ SCORE_WEIGHTS: Dict[str, float] = {
 }
 
 # Maximum characters from corpus sent to the LLM to avoid token overflow.
-_MAX_CORPUS_CHARS: int = 12_000
-
-# Number of keywords per intent-classification batch (reduces LLM round-trips).
-_INTENT_BATCH_SIZE: int = 20
+_MAX_CORPUS_CHARS: int = 4_000
 
 DEFAULT_LLM_MODEL: str = settings.ANTHROPIC_MODEL
 
@@ -173,15 +170,46 @@ class SEOService:
         """Execute the full 11-step SEO pipeline and return the blueprint dict."""
         logger.info("SEOService.run() | query=%s…", user_input[:80])
 
-        # Step 1 — corpus
+        # Workflows may prefix "[Brand: X]" for manager resolution — strip that
+        # before keyword seeding/affinity so primaries stay searchable.
+        clean_query = self._clean_user_query(user_input)
+
+        # Step 1 — corpus (rank docs against the real topic, not the brand tag)
         corpus, documents = self._prepare_corpus(
             research_data,
-            user_input,
+            clean_query,
         )
 
-        # Step 2 — candidate keywords via LLM
-        candidates = self._extract_candidate_keywords(corpus, user_input, brand_context)
-        logger.info("Candidates extracted: %d", len(candidates))
+        # Step 2 — seed from clean query + brand, then expand via LLM
+        seeded = self._seed_candidates(clean_query, brand_context)
+        llm_candidates = self._extract_candidate_keywords(
+            corpus,
+            clean_query,
+            brand_context,
+            seed_keywords=[c.keyword for c in seeded],
+        )
+        candidates = self._merge_candidates(seeded, llm_candidates)
+        candidates = self._validate_against_evidence(
+            candidates,
+            corpus=corpus,
+            user_input=clean_query,
+            brand_context=brand_context,
+        )
+        logger.info(
+            "Candidates ready | seeded=%d | llm=%d | validated=%d | clean_query=%s…",
+            len(seeded),
+            len(llm_candidates),
+            len(candidates),
+            clean_query[:60],
+        )
+
+        if not candidates:
+            # Production fallback: never fail hard — use seeds or brand direction.
+            candidates = seeded or self._seed_candidates(clean_query, brand_context)
+            logger.warning(
+                "Validation emptied candidates; falling back to %d seeds",
+                len(candidates),
+            )
 
         if not candidates:
             logger.warning("No candidates extracted; returning empty blueprint.")
@@ -190,7 +218,7 @@ class SEOService:
         # Steps 3–8 — all scoring dimensions
         candidates = self._score_tfidf(candidates, documents)
         candidates = self._score_bm25(candidates, documents)
-        candidates = self._score_semantic_similarity(candidates, user_input)
+        candidates = self._score_semantic_similarity(candidates, clean_query)
         candidates = self._score_pain_point(candidates, brand_context)
         candidates = self._score_brand_relevance(candidates, brand_context)
         candidates = self._classify_search_intent(candidates)
@@ -202,12 +230,14 @@ class SEOService:
         ranked = self._rank_keywords(candidates)
         ranked = ranked[:20]
 
-        # Step 11 — build blueprint
-        blueprint = self._build_blueprint(ranked, user_input, brand_context)
+        # Step 11 — build blueprint (slots assigned by rank + query affinity)
+        blueprint = self._build_blueprint(ranked, clean_query, brand_context)
         logger.info(
-            "SEOService.run() complete | primary=%d | intent=%s",
+            "SEOService.run() complete | primary=%d | secondary=%d | intent=%s | primary=%s",
             len(blueprint.primary_keywords),
+            len(blueprint.secondary_keywords),
             blueprint.search_intent,
+            blueprint.primary_keywords,
         )
         return self._blueprint_to_dict(blueprint)
 
@@ -284,9 +314,15 @@ class SEOService:
         corpus: str,
         user_input: str,
         brand_context: Dict,
+        seed_keywords: Optional[List[str]] = None,
     ) -> List[KeywordCandidate]:
         """Call the LLM to extract structured keyword candidates from the corpus."""
-        prompt = self._build_extraction_prompt(corpus, user_input, brand_context)
+        prompt = self._build_extraction_prompt(
+            corpus,
+            user_input,
+            brand_context,
+            seed_keywords=seed_keywords or [],
+        )
         try:
             raw = self._call_llm(
                 system=(
@@ -318,6 +354,7 @@ class SEOService:
         corpus: str,
         user_input: str,
         brand_context: Dict,
+        seed_keywords: Optional[List[str]] = None,
     ) -> str:
         """Construct the structured keyword extraction prompt."""
         tone = brand_context.get("tone", "professional")
@@ -330,6 +367,7 @@ class SEOService:
 
         kd_str = ", ".join(str(k) for k in keyword_direction) if keyword_direction else "none specified"
         rs_str = ", ".join(str(r) for r in reader_segment) if reader_segment else "general audience"
+        seeds_str = ", ".join(seed_keywords) if seed_keywords else "none"
 
         return f"""You are performing keyword research for an SEO content strategy.
 
@@ -337,17 +375,19 @@ USER QUERY      : {user_input}
 BRAND TONE      : {tone}
 TARGET AUDIENCE : {rs_str}
 KEYWORD DIRECTION: {kd_str}
+SEED KEYWORDS   : {seeds_str}
 
 RESEARCH CORPUS:
 {truncated}
 
 ---
 
-Extract 15–25 highly relevant keywords that are strongly relevant to the user query and brand context.
+Expand and refine a focused keyword set strongly relevant to the user query.
+Treat SEED KEYWORDS as required anchors (keep them or close variants).
 Prioritize quality over quantity.
 Target distribution:
-- primary: 3-5 keywords
-- secondary: 5-7 keywords
+- primary: 2-4 keywords (2–4 word core topic phrases closest to the user query)
+- secondary: 5-8 keywords (supporting phrases; prefer ≤6 words)
 - long_tail: 3-5 keywords
 - industry: 2-4 keywords
 - technical: 2-4 keywords
@@ -359,16 +399,19 @@ Return a JSON array — each object MUST follow this schema exactly:
 }}
 
 Category definitions:
-  primary    – 1-3 word core topic keywords (broad, high volume)
+  primary    – 2-4 word core topic keywords closest to the user query (never include workflow tags like "brand")
   secondary  – supporting keywords that complement primary topics
   long_tail  – 3-6 word specific phrases with clear search intent
   industry   – domain-specific jargon, terminology, acronyms
   technical  – technical terms, product names, frameworks, tools
 
 Rules:
-  - Only extract keywords supported by the corpus or user query.
+  - Only extract keywords supported by the corpus, user query, or seed list.
+  - Primary keywords MUST be short searchable phrases (2–4 words), not full sentences.
+  - Never invent keywords that start with the word "brand".
   - No duplicate keywords.
   - Lowercase all keywords.
+  - Do not invent unrelated topics.
   - Return ONLY the JSON array — zero prose, zero markdown.
 """
 
@@ -428,6 +471,277 @@ Rules:
             )
 
         return candidates
+
+    # ------------------------------------------------------------------
+    # Seeding, merge, validation, slot assignment
+    # ------------------------------------------------------------------
+
+    _QUERY_STOPWORDS = frozenset({
+        "a", "an", "the", "for", "to", "of", "in", "on", "and", "or",
+        "how", "what", "why", "when", "where", "is", "are", "be", "with",
+        "from", "by", "about", "into", "our", "your", "my", "we", "you",
+        "write", "generate", "create", "make", "blog", "article", "post",
+        "please", "need", "want",
+        # Workflow-tag pollution — never treat as search terms
+        "brand",
+    })
+
+    @staticmethod
+    def _clean_user_query(user_input: str) -> str:
+        """
+        Strip workflow brand tags like '[Brand: Futuristix]' from the query.
+
+        Does not change how brands are resolved elsewhere — only cleans the
+        string used for keyword seeding and affinity scoring.
+        """
+        text = (user_input or "").strip()
+        cleaned = re.sub(
+            r"^\[Brand:\s*[^\]]+\]\s*",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        ).strip()
+        return cleaned or text
+
+    @staticmethod
+    def _is_polluted_keyword(keyword: str) -> bool:
+        """Reject keywords produced by '[Brand: …]' leakage."""
+        kw = (keyword or "").strip().lower()
+        if not kw:
+            return True
+        if kw == "brand" or kw.startswith("brand "):
+            return True
+        return False
+
+    @staticmethod
+    def _is_viable_primary(keyword: str) -> bool:
+        """Primary slots must be short, searchable phrases (2–5 words)."""
+        words = [w for w in (keyword or "").strip().split() if w]
+        if len(words) < 2 or len(words) > 5:
+            return False
+        if words[0] == "brand":
+            return False
+        return True
+
+    def _seed_candidates(
+        self,
+        user_input: str,
+        brand_context: Dict,
+    ) -> List[KeywordCandidate]:
+        """
+        Deterministic seeds from the cleaned user query and brand keyword_direction.
+
+        Prefers short searchable phrases (bigrams / 3–4 token cores) over dumping
+        the whole query as one primary keyword.
+        """
+        seeds: List[KeywordCandidate] = []
+        seen: set = set()
+
+        clean = self._clean_user_query(user_input)
+        tokens = [
+            t for t in re.findall(r"[a-z0-9]+", clean.lower())
+            if t not in self._QUERY_STOPWORDS and len(t) > 1
+        ]
+
+        def _add(phrase: str, category: str) -> None:
+            phrase = phrase.strip().lower()
+            if (
+                not phrase
+                or phrase in seen
+                or self._is_polluted_keyword(phrase)
+            ):
+                return
+            seen.add(phrase)
+            seeds.append(KeywordCandidate(keyword=phrase, category=category))
+
+        # Core topic phrases as primary seeds
+        if len(tokens) >= 2:
+            _add(" ".join(tokens[: min(4, len(tokens))]), "primary")
+            _add(f"{tokens[0]} {tokens[1]}", "primary")
+        if len(tokens) >= 3:
+            _add(f"{tokens[0]} {tokens[1]} {tokens[2]}", "primary")
+        if len(tokens) >= 4:
+            # e.g. "ai agents … smb" style abbreviated topic
+            _add(f"{tokens[0]} {tokens[1]} {tokens[-1]}", "secondary")
+
+        for raw in brand_context.get("keyword_direction", []) or []:
+            kw = str(raw).strip().lower()
+            if not kw or kw in seen or self._is_polluted_keyword(kw):
+                continue
+            seen.add(kw)
+            seeds.append(KeywordCandidate(keyword=kw, category="secondary"))
+
+        return seeds
+
+    @staticmethod
+    def _merge_candidates(
+        seeded: List[KeywordCandidate],
+        llm_candidates: List[KeywordCandidate],
+    ) -> List[KeywordCandidate]:
+        """Deduplicate while preferring seed order first; drop polluted keywords."""
+        merged: List[KeywordCandidate] = []
+        seen: set = set()
+        for candidate in list(seeded) + list(llm_candidates):
+            key = candidate.keyword.strip().lower()
+            if (
+                not key
+                or key in seen
+                or SEOService._is_polluted_keyword(key)
+            ):
+                continue
+            seen.add(key)
+            merged.append(
+                KeywordCandidate(
+                    keyword=key,
+                    category=candidate.category or "secondary",
+                )
+            )
+        return merged
+
+    def _validate_against_evidence(
+        self,
+        candidates: List[KeywordCandidate],
+        corpus: str,
+        user_input: str,
+        brand_context: Dict,
+    ) -> List[KeywordCandidate]:
+        """
+        Drop keywords that are unsupported by query, corpus, or brand seeds.
+
+        If filtering would remove everything, return the original list unchanged
+        so the pipeline never goes empty in production.
+        """
+        if not candidates:
+            return []
+
+        clean_query = self._clean_user_query(user_input)
+        corpus_l = (corpus or "").lower()
+        query_l = clean_query.lower()
+        brand_allowed = {
+            str(k).strip().lower()
+            for k in (brand_context.get("keyword_direction") or [])
+            if str(k).strip()
+        }
+        evidence = f"{query_l}\n{corpus_l}"
+
+        valid: List[KeywordCandidate] = []
+        for candidate in candidates:
+            kw = candidate.keyword
+            if self._is_polluted_keyword(kw):
+                continue
+            if kw in brand_allowed or kw in query_l or kw in corpus_l:
+                valid.append(candidate)
+                continue
+
+            # Soft support: most content tokens appear in evidence.
+            parts = [
+                p for p in kw.split()
+                if len(p) > 2 and p not in self._QUERY_STOPWORDS
+            ]
+            if parts and sum(1 for p in parts if p in evidence) >= max(1, len(parts) - 1):
+                valid.append(candidate)
+                continue
+
+            logger.debug("Dropping unsupported keyword: %s", kw)
+
+        if not valid:
+            logger.warning(
+                "Keyword validation removed all candidates — keeping originals"
+            )
+            return [
+                c for c in candidates
+                if not self._is_polluted_keyword(c.keyword)
+            ] or candidates
+
+        return valid
+
+    @staticmethod
+    def _query_affinity(keyword: str, user_input: str) -> float:
+        """Fraction of keyword tokens that also appear in the cleaned user query."""
+        stop = SEOService._QUERY_STOPWORDS
+        clean = SEOService._clean_user_query(user_input)
+        kw_tokens = {
+            t for t in re.findall(r"[a-z0-9]+", (keyword or "").lower())
+            if t not in stop and len(t) > 1
+        }
+        q_tokens = {
+            t for t in re.findall(r"[a-z0-9]+", clean.lower())
+            if t not in stop and len(t) > 1
+        }
+        if not kw_tokens or not q_tokens:
+            return 0.0
+        return len(kw_tokens & q_tokens) / float(len(kw_tokens))
+
+    def _assign_keyword_slots(
+        self,
+        ranked: List[KeywordCandidate],
+        user_input: str,
+    ) -> Tuple[List[str], List[str]]:
+        """
+        Assign primary (max 2) and secondary (max 6) from ranked scores.
+
+        Primary prefers short (2–5 word), high-affinity, high-score phrases.
+        Long-tail phrases are kept for secondary — not forced into primary.
+        """
+        if not ranked:
+            return [], []
+
+        clean_query = self._clean_user_query(user_input)
+
+        def _primary_fitness(c: KeywordCandidate) -> float:
+            affinity = self._query_affinity(c.keyword, clean_query)
+            score = float(c.final_score or 0.0)
+            words = len(c.keyword.split())
+            # Mild length preference: 2–4 words ideal for searchable primaries
+            length_bonus = 0.15 if 2 <= words <= 4 else (0.05 if words == 5 else -0.25)
+            viable_bonus = 0.2 if self._is_viable_primary(c.keyword) else -0.35
+            return 0.50 * affinity + 0.35 * score + length_bonus + viable_bonus
+
+        primary_pool = [
+            c for c in ranked
+            if self._is_viable_primary(c.keyword)
+            and not self._is_polluted_keyword(c.keyword)
+        ]
+        if not primary_pool:
+            primary_pool = [
+                c for c in ranked
+                if not self._is_polluted_keyword(c.keyword)
+            ] or ranked
+
+        primary_ranked = sorted(primary_pool, key=_primary_fitness, reverse=True)
+
+        primary: List[str] = []
+        for candidate in primary_ranked:
+            if len(primary) >= 2:
+                break
+            affinity = self._query_affinity(candidate.keyword, clean_query)
+            if not primary:
+                primary.append(candidate.keyword)
+            elif affinity > 0 or self._is_viable_primary(candidate.keyword):
+                primary.append(candidate.keyword)
+
+        if not primary and ranked:
+            primary = [ranked[0].keyword]
+
+        primary_set = set(primary)
+        secondary: List[str] = []
+        for candidate in ranked:
+            if candidate.keyword in primary_set:
+                continue
+            if self._is_polluted_keyword(candidate.keyword):
+                continue
+            secondary.append(candidate.keyword)
+            if len(secondary) >= 6:
+                break
+
+        # Reflect slots back onto candidates for keyword_scores consumers.
+        for candidate in ranked:
+            if candidate.keyword in primary_set:
+                candidate.category = "primary"
+            elif candidate.keyword in secondary:
+                candidate.category = "secondary"
+
+        return primary, secondary
 
     # ------------------------------------------------------------------
     # Step 3 — TF-IDF score
@@ -623,69 +937,61 @@ Rules:
         candidates: List[KeywordCandidate],
     ) -> List[KeywordCandidate]:
         """
-        Batch-classify search intent for all candidates.
-        Batching into groups of _INTENT_BATCH_SIZE reduces LLM round-trips.
+        Rule-based search-intent classification (no LLM).
+
+        Keeps SEO scoring intact while removing an entire Claude round-trip
+        (and potential batch multiplies when many keywords are extracted).
         """
-        for i in range(0, len(candidates), _INTENT_BATCH_SIZE):
-            batch = candidates[i : i + _INTENT_BATCH_SIZE]
-            self._classify_intent_batch(batch)
+        for candidate in candidates:
+            intent = self._heuristic_intent(candidate.keyword)
+            candidate.search_intent = intent
+            candidate.scores["search_intent"] = INTENT_SCORE_MAP.get(intent, 0.8)
         return candidates
 
-    def _classify_intent_batch(
-        self,
-        batch: List[KeywordCandidate],
-    ) -> None:
-        """
-        Classify search intent for one batch of keywords in a single LLM call.
-        Modifies each KeywordCandidate in-place.
-        """
-        keyword_lines = "\n".join(
-            f"{idx + 1}. {c.keyword}" for idx, c in enumerate(batch)
-        )
-        prompt = f"""Classify the search intent of each keyword below.
+    @staticmethod
+    def _heuristic_intent(keyword: str) -> str:
+        """Map a keyword to Informational / Commercial / Transactional / Navigational."""
+        kw = (keyword or "").lower()
 
-Valid intents (choose exactly one per keyword):
-  Informational  – user wants to learn (how, what, why, guide, tips, explained)
-  Commercial     – user is researching before buying (best, vs, review, compare, top)
-  Transactional  – user is ready to act (buy, pricing, order, sign up, download, get)
-  Navigational   – user seeks a specific site or brand (brand name, login, official)
-
-Keywords:
-{keyword_lines}
-
-Return ONLY a JSON array with one entry per keyword in the SAME order:
-[
-  {{"idx": 1, "intent": "Commercial"}},
-  ...
-]
-No prose. No markdown.
-"""
-        try:
-            raw = self._call_llm(
-                system="You are an SEO expert. Return valid JSON only.",
-                user=prompt,
+        if any(
+            t in kw
+            for t in (
+                "buy",
+                "pricing",
+                "price",
+                "order",
+                "sign up",
+                "signup",
+                "download",
+                "get started",
+                "demo",
+                "trial",
             )
-            cleaned = (
-                re.sub(r"```(?:json)?", "", raw)
-                .strip()
-                .strip("`")
-                .strip()
+        ):
+            return "Transactional"
+
+        if any(
+            t in kw
+            for t in (
+                "best",
+                " vs",
+                "versus",
+                "review",
+                "compare",
+                "comparison",
+                "top ",
+                "alternative",
             )
-            classifications = json.loads(cleaned)
-            intent_map: Dict[int, str] = {
-                item["idx"]: item["intent"] for item in classifications
-            }
+        ):
+            return "Commercial"
 
-            for idx, candidate in enumerate(batch):
-                intent = intent_map.get(idx + 1, "Informational")
-                candidate.search_intent = intent
-                candidate.scores["search_intent"] = INTENT_SCORE_MAP.get(intent, 0.8)
+        if any(
+            t in kw
+            for t in ("login", "official", "website", " portal", "dashboard")
+        ):
+            return "Navigational"
 
-        except Exception as exc:
-            logger.warning("Intent classification batch failed: %s", exc)
-            for candidate in batch:
-                candidate.search_intent = "Informational"
-                candidate.scores["search_intent"] = INTENT_SCORE_MAP["Informational"]
+        return "Informational"
 
     # ------------------------------------------------------------------
     # Step 9 — Weighted final score
@@ -726,12 +1032,7 @@ No prose. No markdown.
         brand_context: Dict,
     ) -> SEOBlueprint:
         """Assemble the final SEO Blueprint from ranked keyword candidates."""
-        primary = [c.keyword for c in ranked if c.category == "primary"][:5]
-        secondary = [
-            c.keyword
-            for c in ranked
-            if c.category in ("secondary", "long_tail")
-        ][:5]
+        primary, secondary = self._assign_keyword_slots(ranked, user_input)
 
         # Dominant intent = most frequent intent label among the top-10 keywords.
         top_intents = [c.search_intent for c in ranked[:10] if c.search_intent]
