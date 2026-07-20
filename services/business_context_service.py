@@ -16,6 +16,7 @@ This service does NOT use LLMs or perform any research.
 
 from pathlib import Path
 from typing import Dict, Optional
+import re
 
 import yaml
 
@@ -201,8 +202,9 @@ class BusinessContextService:
 
         Priority:
         1. Explicit brand selected from UI/API.
-        2. Auto-detect from user prompt.
-        3. Default fallback.
+        2. `[Brand: …]` hint embedded in the user prompt.
+        3. Auto-detect from user prompt (longest alias wins — avoids weak collisions).
+        4. Default fallback.
         """
 
         # --------------------------------------------------
@@ -231,28 +233,56 @@ class BusinessContextService:
                     brand == namespace
                     or brand == display_name
                     or brand in aliases
+                    or brand in display_name
                 ):
                     return self._build_context(
                         cfg,
                         user_input,
                     )
 
-        # --------------------------------------------------
-        # Auto detect from prompt
-        # --------------------------------------------------
-        user_input = user_input.lower()
+        text = (user_input or "").strip()
+        text_lower = text.lower()
 
+        # --------------------------------------------------
+        # Embedded [Brand: …] hint (workflows often prefix this)
+        # --------------------------------------------------
+        brand_hint = re.search(
+            r"\[\s*brand\s*:\s*([^\]]+)\]",
+            text,
+            flags=re.I,
+        )
+        if brand_hint:
+            hinted = brand_hint.group(1).strip().lower()
+            for cfg in self.brand_configs.values():
+                aliases = [a.lower() for a in cfg.get("aliases", [])]
+                namespace = str(cfg.get("namespace", "")).lower()
+                display_name = str(cfg.get("display_name", "")).lower()
+                if (
+                    hinted == namespace
+                    or hinted == display_name
+                    or hinted in aliases
+                    or hinted in display_name
+                ):
+                    return self._build_context(cfg, user_input)
+
+        # --------------------------------------------------
+        # Auto detect from prompt — longest matching alias wins
+        # --------------------------------------------------
+        best_cfg = None
+        best_len = 0
         for cfg in self.brand_configs.values():
-            aliases = cfg.get("aliases", [])
+            for alias in cfg.get("aliases", []):
+                alias_l = str(alias).lower().strip()
+                if not alias_l or alias_l not in text_lower:
+                    continue
+                # Prefer longer, more specific aliases (e.g. "network deployment"
+                # over a short token that collides across brands).
+                if len(alias_l) > best_len:
+                    best_cfg = cfg
+                    best_len = len(alias_l)
 
-            if any(
-                alias.lower() in user_input
-                for alias in aliases
-            ):
-                return self._build_context(
-                    cfg,
-                    user_input,
-                )
+        if best_cfg is not None:
+            return self._build_context(best_cfg, user_input)
 
         # --------------------------------------------------
         # Fallback brand
