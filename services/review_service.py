@@ -38,7 +38,7 @@ import logging
 import re
 from typing import Dict, List, Tuple
 
-from anthropic import Anthropic
+from openai import OpenAI
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -111,19 +111,19 @@ class ReviewService:
     """Evaluates content quality and returns a structured review decision."""
 
     def __init__(self) -> None:
-        # Ensure Claude credentials are available
-        if not settings.ANTHROPIC_API_KEY:
+        # Ensure OpenAI credentials are available
+        if not settings.OPENAI_API_KEY:
             raise ValueError(
-                "ANTHROPIC_API_KEY is not configured."
+                "OPENAI_API_KEY is not configured."
             )
 
-        # Create authenticated Anthropic client
-        self._anthropic = Anthropic(
-            api_key=settings.ANTHROPIC_API_KEY
+        # Create authenticated OpenAI client
+        self._openai = OpenAI(
+            api_key=settings.OPENAI_API_KEY
         )
 
         # Review configuration
-        self._model = settings.ANTHROPIC_MODEL
+        self._model = settings.OPENAI_MODEL
         self._temperature = 0.0  # deterministic reviews
 
         logger.info(
@@ -146,13 +146,41 @@ class ReviewService:
         logger.info(
             "ReviewService.run() | revision=%d | words=%d",
             revision_count,
-            len(draft.split()),
+            len((draft or "").split()),
         )
+
+        # Hard fail empty drafts immediately (no LLM spend on blank content).
+        if not (draft or "").strip():
+            content_type = str(strategy.get("content_type", "article")).lower()
+            secondary_bit = (
+                " Place at least one secondary keyword in the introduction and one "
+                "in the conclusion."
+                if content_type in ("blog", "article")
+                else " Do not keyword-stuff; keep short-form copy natural."
+            )
+            return {
+                "score": 0,
+                "status": "FAIL",
+                "needs_revision": True,
+                "feedback": [],
+                "issues": [
+                    "Draft is empty (0 words). Regenerate the full article from scratch."
+                ],
+                "rewrite_instruction": (
+                    "The previous draft was empty. Write the COMPLETE piece from "
+                    "scratch following the outline and target length. Return full "
+                    "Markdown only — never return an empty response. Use a natural "
+                    "human voice (no Moreover/Furthermore/In conclusion)."
+                    + secondary_bit
+                ),
+                "dimension_scores": {d: 0 for d in DIMENSION_WEIGHTS},
+                "revision_number": revision_count + 1,
+            }
 
         # Rule-based pre-checks (fast, no LLM)
         pre_check_issues = self._run_pre_checks(draft, strategy)
 
-        # LLM evaluation (all five dimensions in one call)
+        # LLM evaluation (all dimensions in one call)
         llm_result = self._evaluate_via_llm(
             draft=draft,
             strategy=strategy,
@@ -162,9 +190,22 @@ class ReviewService:
 
         # Weighted final score
         dim_scores = llm_result.get("dimension_scores", {})
+        # Cap natural_voice when AI-cliché pre-check fired
+        found_tells = self._detect_ai_tells(draft.lower())
+        if found_tells:
+            dim_scores["natural_voice"] = min(
+                int(dim_scores.get("natural_voice", 50)),
+                60,
+            )
+
         score = self._calculate_score(dim_scores)
         status = "PASS" if score >= PASS_THRESHOLD else "FAIL"
         needs_revision = status == "FAIL"
+
+        # Always revise when AI tells remain or natural_voice is weak
+        if found_tells or int(dim_scores.get("natural_voice", 100)) < 75:
+            needs_revision = True
+            status = "FAIL"
 
         rewrite_instruction = ""
         if needs_revision:
@@ -173,7 +214,17 @@ class ReviewService:
                 rewrite_instruction = self._fallback_rewrite_instruction(
                     dim_scores=dim_scores,
                     issues=pre_check_issues + llm_result.get("issues", []),
+                    content_type=str(strategy.get("content_type", "article")).lower(),
                 )
+            if found_tells:
+                rewrite_instruction = (
+                    rewrite_instruction
+                    + "\nRemove these AI-cliché phrases entirely and rewrite those "
+                    "sentences naturally: "
+                    + ", ".join(f'"{t}"' for t in found_tells[:8])
+                    + ". Never start sentences with Moreover, Furthermore, Additionally, "
+                    "or In conclusion. Improve natural_voice above 75."
+                ).strip()
 
         review = {
             "score": score,
@@ -396,7 +447,7 @@ class ReviewService:
         pre_check_issues: List[str],
     ) -> Dict:
         """
-        Run a single Anthropic call that scores all six dimensions
+        Run a single OpenAI call that scores all six dimensions
         and produces actionable feedback.
         """
         prompt = self._build_evaluation_prompt(
@@ -406,18 +457,23 @@ class ReviewService:
             pre_check_issues=pre_check_issues,
         )
         try:
-            response = self._anthropic.messages.create(
+            response = self._openai.chat.completions.create(
                 model=self._model,
                 max_tokens=1024,
                 temperature=self._temperature,
-                system=(
-                    "You are a senior content editor and SEO strategist. "
-                    "You evaluate content objectively and give precise, actionable feedback. "
-                    "Return valid JSON only — no prose, no markdown fences."
-                ),
-                messages=[{"role": "user", "content": prompt}],
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a senior content editor and SEO strategist. "
+                            "You evaluate content objectively and give precise, actionable feedback. "
+                            "Return valid JSON only — no prose, no markdown fences."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
             )
-            return self._parse_evaluation(response.content[0].text)
+            return self._parse_evaluation(response.choices[0].message.content or "")
         except Exception as exc:
             logger.error("ReviewService LLM call failed: %s — using fallback scores", exc)
             return self._fallback_evaluation(pre_check_issues)
@@ -453,6 +509,11 @@ class ReviewService:
         pre_issues_str = "\n".join(f"- {i}" for i in pre_check_issues) if pre_check_issues else "None"
 
         truncated_draft = self._prepare_draft_for_review(draft)
+        secondary_rewrite_hint = (
+            "Also fix secondary-keyword gaps in intro/closing and any incomplete sentences. "
+            if str(content_type).lower() in ("blog", "article")
+            else "Do not keyword-stuff; keep short-form copy natural. Fix any incomplete sentences. "
+        )
 
         return f"""Evaluate the following {content_type} draft.
 
@@ -558,7 +619,7 @@ Return ONLY this JSON object:
     "<specific problem not already listed in pre-check issues>",
     "<specific problem>"
   ],
-  "rewrite_instruction": "<If weighted score would be < {PASS_THRESHOLD}: one concise paragraph (maximum 150 words) of actionable revision guidance for the Writer Agent. Lead with the lowest-scoring dimension (especially factual_grounding: add 2–3 attributed research stats/citations; and natural_voice: remove AI-cliché phrases, vary sentence rhythm, write in a natural human voice). Also fix secondary-keyword gaps in intro/closing and any incomplete sentences. If score >= {PASS_THRESHOLD}: empty string.>"
+  "rewrite_instruction": "<If weighted score would be < {PASS_THRESHOLD}: one concise paragraph (maximum 150 words) of actionable revision guidance for the Writer Agent. Lead with the lowest-scoring dimension (especially factual_grounding: add 2–3 attributed research stats/citations when appropriate for this content type; and natural_voice: remove AI-cliché phrases, vary sentence rhythm, write in a natural human voice). {secondary_rewrite_hint}If score >= {PASS_THRESHOLD}: empty string.>"
 }}
 """
 
@@ -655,19 +716,28 @@ Return ONLY this JSON object:
     def _fallback_rewrite_instruction(
         dim_scores: Dict[str, int],
         issues: List[str],
+        content_type: str = "article",
     ) -> str:
         """Build rewrite guidance when the LLM left rewrite_instruction empty."""
         lowest = min(DIMENSION_WEIGHTS.keys(), key=lambda d: dim_scores.get(d, 0))
         issue_bits = "; ".join(str(i) for i in issues[:3] if str(i).strip())
+        secondary_bit = (
+            "place secondary keywords naturally in the introduction and conclusion; "
+            if str(content_type).lower() in ("blog", "article")
+            else "do not keyword-stuff; "
+        )
         base = (
             f"Revise to reach an overall score of at least {PASS_THRESHOLD}. "
             f"Priority dimension: {lowest}. "
-            "Add 3 attributed statistics from research (named source + concrete figure/"
-            "percentage/year — never invent orgs or vague 'studies show'); "
-            "remove absolute uncited industry claims; place secondary keywords "
-            "naturally in the introduction and conclusion; complete every sentence; "
+            "Add attributed statistics from research only when available (named source + "
+            "concrete figure/percentage/year — never invent orgs or vague 'studies show'); "
+            "remove absolute uncited industry claims; "
+            f"{secondary_bit}"
+            "complete every sentence; "
             "close with the brand CTA verbatim (specific action, not 'reach out today'); "
-            "write currency as USD amounts without the $ character."
+            "write currency as USD amounts without the $ character; "
+            "rewrite in a natural human voice — ban Moreover/Furthermore/In conclusion/"
+            "it's worth noting; vary sentence length; keep natural_voice above 75."
         )
         if issue_bits:
             return f"{base} Also address: {issue_bits}"
