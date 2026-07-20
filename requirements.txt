@@ -1,7 +1,6 @@
 langgraph
 langchain
-langchain-anthropic
-anthropic
+langchain-openai
 pymongo
 python-dotenv
 pydantic
