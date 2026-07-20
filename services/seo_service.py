@@ -48,7 +48,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-from anthropic import Anthropic
+from openai import OpenAI
 from rank_bm25 import BM25Okapi
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -91,7 +91,7 @@ SCORE_WEIGHTS: Dict[str, float] = {
 # Maximum characters from corpus sent to the LLM to avoid token overflow.
 _MAX_CORPUS_CHARS: int = 4_000
 
-DEFAULT_LLM_MODEL: str = settings.ANTHROPIC_MODEL
+DEFAULT_LLM_MODEL: str = settings.OPENAI_MODEL
 
 
 # ---------------------------------------------------------------------------
@@ -141,15 +141,15 @@ class SEOService:
         model: str = DEFAULT_LLM_MODEL,
         temperature: float = 0.0,
     ) -> None:
-        if not settings.ANTHROPIC_API_KEY:
+        if not settings.OPENAI_API_KEY:
             raise ValueError(
-                "ANTHROPIC_API_KEY is not configured."
+                "OPENAI_API_KEY is not configured."
             )
-            
+
         self._model = model
         self._temperature = temperature
-        self._anthropic = Anthropic(      # reads ANTHROPIC_API_KEY from env
-             api_key=settings.ANTHROPIC_API_KEY
+        self._openai = OpenAI(
+             api_key=settings.OPENAI_API_KEY
         )
         logger.info(
             "SEOService ready | llm_model=%s | embedding_model=%s",
@@ -939,7 +939,7 @@ Rules:
         """
         Rule-based search-intent classification (no LLM).
 
-        Keeps SEO scoring intact while removing an entire Claude round-trip
+        Keeps SEO scoring intact while removing an entire LLM round-trip
         (and potential batch multiplies when many keywords are extracted).
         """
         for candidate in candidates:
@@ -1110,39 +1110,63 @@ Return ONLY this JSON object — no prose, no markdown:
                 .strip()
             )
             data = json.loads(cleaned)
-            return (
-                str(data.get("meta_title", ""))[:60],
-                str(data.get("meta_description", ""))[:160],
-                str(data.get("slug", self._slugify(user_input)))[:80],
-            )
+            meta_title = str(data.get("meta_title", "")).strip()[:60]
+            meta_description = str(data.get("meta_description", "")).strip()[:160]
+            slug = str(data.get("slug", "")).strip()[:80] or self._slugify(user_input)
+
+            # LLM sometimes returns blanks — never ship empty SEO fields.
+            if not meta_title or not meta_description or not slug:
+                fb_title, fb_desc, fb_slug = self._meta_fallback(
+                    user_input, primary_keywords, brand_name
+                )
+                meta_title = meta_title or fb_title
+                meta_description = meta_description or fb_desc
+                slug = slug or fb_slug
+
+            return meta_title[:60], meta_description[:160], slug[:80]
 
         except Exception as exc:
             logger.warning("Meta field generation failed: %s", exc)
-            fallback_title = (
-                f"{primary_keywords[0].title()} | {brand_name}"
-                if primary_keywords
-                else user_input[:60]
-            )
-            return (
-                fallback_title[:60],
-                (user_input[:155] + "…") if len(user_input) > 155 else user_input,
-                self._slugify(user_input),
-            )
+            return self._meta_fallback(user_input, primary_keywords, brand_name)
+
+    def _meta_fallback(
+        self,
+        user_input: str,
+        primary_keywords: List[str],
+        brand_name: str,
+    ) -> Tuple[str, str, str]:
+        """Rule-based meta title / description / slug when LLM output is unusable."""
+        fallback_title = (
+            f"{primary_keywords[0].title()} | {brand_name}"
+            if primary_keywords
+            else (user_input[:60] or "Untitled")
+        )
+        desc_src = user_input.strip() or fallback_title
+        fallback_desc = (
+            (desc_src[:155] + "…") if len(desc_src) > 155 else desc_src
+        )
+        return (
+            fallback_title[:60],
+            fallback_desc[:160],
+            self._slugify(user_input or fallback_title),
+        )
 
     # ------------------------------------------------------------------
     # Utility helpers
     # ------------------------------------------------------------------
 
     def _call_llm(self, system: str, user: str, max_tokens: int = 2048) -> str:
-        """Invoke the Anthropic model and return the plain text response."""
-        response = self._anthropic.messages.create(
+        """Invoke the OpenAI model and return the plain text response."""
+        response = self._openai.chat.completions.create(
             model=self._model,
             max_tokens=max_tokens,
             temperature=self._temperature,
-            system=system,
-            messages=[{"role": "user", "content": user}],
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
         )
-        return response.content[0].text
+        return (response.choices[0].message.content or "").strip()
     
     def _rank_documents_by_similarity(
         self,
