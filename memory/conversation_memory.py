@@ -173,7 +173,7 @@ class ConversationMemory:
     ) -> List[Dict[str, str]]:
         """
         Return history as [{"role": ..., "content": ...}] — ready for
-        direct use as the `messages` argument in Anthropic / LangChain calls.
+        direct use as the `messages` argument in OpenAI / LangChain calls.
         """
         return [
             {"role": turn["role"], "content": turn["content"]}
