@@ -145,7 +145,37 @@ def review_node(state: ContentState) -> ContentState:
     # ------------------------------------------------------------------
     # Enforce maximum revision limit
     # ------------------------------------------------------------------
+    word_count = len(draft.split())
+    content_type = (strategy.get("content_type") or state.get("content_type") or "").lower()
+    min_words = (
+        settings.MIN_ARTICLE_WORDS
+        if content_type in ("blog", "article")
+        else 1
+    )
+
     if review["needs_revision"] and revision_count >= max_revisions:
+        # Never force-pass empty / far-too-short content — mark FAILED instead.
+        if word_count < max(1, min_words // 4):
+            logger.error(
+                "Max revisions reached with unusable draft (%d words) — marking FAILED",
+                word_count,
+            )
+            review["needs_revision"] = False
+            review["status"] = "FAIL"
+            review["issues"] = list(review.get("issues") or []) + [
+                f"Generation failed after {max_revisions} revisions: "
+                f"content only {word_count} words (unusable)."
+            ]
+            state["workflow_status"] = "FAILED"
+            state["errors"] = list(state.get("errors") or []) + [
+                f"Content generation failed: draft too short ({word_count} words) "
+                f"after maximum revisions. Please retry."
+            ]
+            state["current_agent"] = "review"
+            state["next_agent"] = "end"
+            state["review"] = review
+            return state
+
         logger.warning(
             "Max revision limit (%d) reached — forcing PASS with score %d",
             max_revisions,
