@@ -36,8 +36,8 @@ if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 if "results" not in st.session_state:
     st.session_state.results = {}          # keyed by tab name
-API_BASE_URL = "http://54.218.34.106:9000"
-#API_BASE_URL = "http://localhost:8000"
+#API_BASE_URL = "http://54.218.34.106:9000"
+API_BASE_URL = "http://localhost:8000"
 
 # Always point at the deployed API (do not let an old empty session value stick).
 st.session_state.api_url = API_BASE_URL
@@ -428,7 +428,7 @@ with tab_auto:
             "Max Revisions",
             1,
             5,
-            3,
+            1,
             key="a_rev",
         )
 
@@ -503,7 +503,7 @@ with tab_content:
         c_objective = col3.selectbox("Objective", ["seo", "authority", "engagement", "leads"])
         c_language = col4.selectbox("Language", ["English", "Hindi"], key="c_lang")
         c_instructions = st.text_input("Additional Instructions (optional)", placeholder="Focus on ROI examples…")
-        c_max_rev = st.slider("Max Revisions", 1, 5, 3, key="c_rev")
+        c_max_rev = st.slider("Max Revisions", 1, 5, 1, key="c_rev")
         c_submitted = st.form_submit_button("Generate Content", use_container_width=True, type="primary")
 
     if c_submitted:
@@ -554,7 +554,7 @@ with tab_email:
         e_objective = col3.selectbox("Objective", ["leads", "engagement"], key="e_obj")
         e_language = col4.selectbox("Language", ["English", "Hindi"], key="e_lang")
         e_instructions = st.text_input("Additional Instructions (optional)", key="e_instr")
-        e_max_rev = st.slider("Max Revisions", 1, 4, 2, key="e_rev")
+        e_max_rev = st.slider("Max Revisions", 1, 4, 1, key="e_rev")
         e_submitted = st.form_submit_button("Generate Email", use_container_width=True, type="primary")
 
     if e_submitted:
@@ -600,7 +600,7 @@ with tab_seo:
         s_brand = col2.selectbox("Brand", brand_names, key="s_brand")
         col3, col4 = st.columns(2)
         s_language = col3.selectbox("Language", ["English", "Hindi"], key="s_lang")
-        s_max_rev = col4.slider("Max Revisions", 1, 5, 3, key="s_rev")
+        s_max_rev = col4.slider("Max Revisions", 1, 5, 1, key="s_rev")
         s_instructions = st.text_input("Additional Instructions (optional)", key="s_instr")
         s_submitted = st.form_submit_button("Generate SEO Content", use_container_width=True, type="primary")
 
@@ -648,7 +648,7 @@ with tab_social:
         so_objective = col3.selectbox("Objective", ["engagement", "authority", "leads"], key="so_obj")
         so_language = col4.selectbox("Language", ["English", "Hindi"], key="so_lang")
         so_instructions = st.text_input("Additional Instructions (optional)", key="so_instr")
-        so_max_rev = st.slider("Max Revisions", 1, 4, 2, key="so_rev")
+        so_max_rev = st.slider("Max Revisions", 1, 4, 1, key="so_rev")
         so_submitted = st.form_submit_button("Generate Social Post", use_container_width=True, type="primary")
 
     if so_submitted:
