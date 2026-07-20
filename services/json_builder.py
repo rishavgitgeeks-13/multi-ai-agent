@@ -139,19 +139,19 @@ class JSONBuilder:
             "primary_keywords": primary_keywords,
             "secondary_keywords": secondary_keywords,
             "meta_title": (
-                seo_blueprint.get("meta_title")
-                or metadata.get("meta_title")
-                or ""
+                (seo_blueprint.get("meta_title") or "").strip()
+                or (metadata.get("meta_title") or "").strip()
+                or (metadata.get("title") or "Untitled")[:60]
             ),
             "meta_description": (
-                seo_blueprint.get("meta_description")
-                or metadata.get("meta_description")
-                or ""
+                (seo_blueprint.get("meta_description") or "").strip()
+                or (metadata.get("meta_description") or "").strip()
+                or "Read this guide for practical insights and next steps."
             ),
             "slug": (
-                seo_blueprint.get("slug")
-                or metadata.get("slug")
-                or ""
+                (seo_blueprint.get("slug") or "").strip()
+                or (metadata.get("slug") or "").strip()
+                or "untitled"
             ),
             "search_intent": seo_blueprint.get("search_intent", ""),
             "keyword_density": content.get("keyword_density", {}),
