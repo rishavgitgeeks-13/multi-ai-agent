@@ -35,13 +35,18 @@ REFUSAL_MESSAGE = (
     "Requests involving sexual violence, child abuse, crime how-tos "
     "(fraud, scams, theft, hacking for harm), hate or discrimination, "
     "or religion content that may inflame social conflict are not allowed. "
-    "Educational safety topics (for example how to protect yourself from phishing) are allowed. "
+    "Educational awareness topics are allowed — for example phishing protection, "
+    "how trusted nanny/childcare agencies screen differently, NRI fraud awareness, "
+    "or balanced AI-market / bubble education. "
     "Please submit a different, appropriate topic."
 )
 
+# Educational / defensive awareness — checked BEFORE hard blocks.
+# Harm how-tos and graphic exploitation remain blocked when awareness intent is absent.
 _DEFENSIVE_ALLOW_PATTERNS: List[re.Pattern[str]] = [
     re.compile(p, re.I)
     for p in [
+        # Cyber / phishing / scam protection
         r"\b(protect|protection|prevent|prevention|defend|defense|defence|"
         r"aware|awareness|safe|safety|secure|security|avoid|spot|detect|"
         r"recognis[ea]|recognize|report)\b.{0,60}\b"
@@ -52,6 +57,33 @@ _DEFENSIVE_ALLOW_PATTERNS: List[re.Pattern[str]] = [
         r"\bphishing\s+(awareness|prevention|protection|safety)\b",
         r"\b(cybersecurity|information\s+security|data\s+protection)\b",
         r"\bhow\s+to\s+(spot|identify|recognis[ea]|avoid)\s+(a\s+)?(scam|phish|fraud)\b",
+        # Childcare / nanny agency trust & safety education (not graphic crime content)
+        r"\b(how\s+)?(good|trusted|responsible|reputable)\s+"
+        r"(nanny|childcare|caregiver)?\s*(agenc(y|ies)|providers?)\b.{0,80}\b"
+        r"(screen|vet|train|monitor|differently|better|safety|red\s*flags|hire|hiring)\b",
+        r"\b(what\s+)?(responsible|good|trusted)\s+(agencies|providers)\s+"
+        r"(do|should)\s+(differently|better)\b",
+        r"\b(vet|screen|screening|train|training|monitor|background\s*check|"
+        r"red\s*flags|hire|hiring)\b.{0,60}\b"
+        r"(nanny|nannies|caregiver|babysitter|childcare|agency|agencies)\b",
+        r"\b(nanny|nannies|caregiver|babysitter|childcare)\s+"
+        r"(safety|trust|screening|standards|vetting|quality)\b",
+        r"\b(parents?|families)\b.{0,50}\b(vet|check|choose|hire|select)\b.{0,40}\b"
+        r"(nanny|caregiver|agency|childcare)\b",
+        r"\b(after|following)\s+(recent\s+)?(childcare|nanny|caregiver).{0,50}\b"
+        r"(safety|incident|concern|news|trend)\b",
+        r"\b(childcare|nanny)\s+(safety|trust)\s+(awareness|tips|guide|checklist)\b",
+        # NRI fraud awareness (not scam how-to)
+        r"\b(nri|nris|non[-\s]?resident\s+indians?)\b.{0,80}\b"
+        r"(scam|fraud|aware|awareness|protect|protection|avoid|spot|safe|safety)\b",
+        r"\b(protect|spot|avoid|awareness|prevent).{0,50}\b(nri|local)\b.{0,40}\b"
+        r"(scam|fraud)\b",
+        # AI bubble / investor education
+        r"\b(ai|artificial\s+intelligence)\s+bubble\b",
+        r"\b(short[-\s]?term|long[-\s]?term)\s+invest(or|ment|ing)?.{0,60}\b"
+        r"(ai|bubble|artificial\s+intelligence)\b",
+        r"\b(ai|tech)\s+(stock|market|invest).{0,50}\b"
+        r"(bubble|risk|discount|volatility|burst)\b",
     ]
 ]
 
@@ -67,11 +99,28 @@ _HARD_BLOCK_PATTERNS: List[Tuple[str, re.Pattern[str]]] = [
         ),
     ),
     (
+        "graphic_child_harm",
+        re.compile(
+            r"("
+            r"\bwashing\s*machine\b.{0,80}\b(child|kid|infant|baby|nanny)\b|"
+            r"\b(child|kid|infant|baby)\b.{0,80}\bwashing\s*machine\b|"
+            r"\b(tissue|cloth)\b.{0,40}\b(mouth|face)\b.{0,60}\b(child|kid|infant|baby)\b|"
+            r"\b(lock|locked|shut)\b.{0,30}\b(bathroom|room)\b.{0,50}\b(child|kid|infant|baby)\b|"
+            r"\b(nanny|caregiver)\b.{0,60}\b(lock|locked)\b.{0,40}\b(bathroom|room)\b.{0,40}\b(child|kid|baby)\b"
+            r")",
+            re.I,
+        ),
+    ),
+    (
         "sexual_violence",
         re.compile(
-            r"\b(rape|raping|rapist|sexual\s*assault|sexually\s*assault|"
-            r"sexual\s*abuse|sexually\s*abuse|molest|molestation|"
-            r"non[-\s]?consensual\s*sex|force[d]?\s*sex)\b",
+            r"\b("
+            r"rape|raping|rapist|"
+            r"sexual\s*assault\w*|sexually\s*assault\w*|"
+            r"sexual\s*abuse\w*|sexually\s*abuse\w*|"
+            r"molest\w*|molestation|"
+            r"non[-\s]?consensual\s*sex|force[d]?\s*sex"
+            r")\b",
             re.I,
         ),
     ),
@@ -86,27 +135,46 @@ _HARD_BLOCK_PATTERNS: List[Tuple[str, re.Pattern[str]]] = [
     (
         "fraud_scam_howto",
         re.compile(
-            r"\b(how\s+to\s+).{0,40}\b(commit\s+)?(fraud|scam|phish|defraud)|"
-            r"\b(run\s+a\s+scam|ponzi|identity\s+theft|"
-            r"fake\s+(kyc|invoice|cheque|check)|card\s+skimm|"
-            r"phishing\s+attack)\b",
+            # Block scam/fraud *how-tos* only — not educational mentions of fraud/phishing.
+            r"\b("
+            r"how\s+to\s+.{0,40}\b(commit\s+)?(fraud|scam|phish|defraud)\b|"
+            r"how\s+to\s+.{0,40}\b(run\s+a\s+scam|phishing\s+attack|identity\s+theft)\b|"
+            r"run\s+a\s+scam\b|"
+            r"(create|make)\s+fake\s+(kyc|invoice|cheque|check)\b|"
+            r"card\s+skimm\w*|"
+            r"ponzi\s+(scheme|scam)\s+(how\s+to|guide|tutorial)"
+            r")",
             re.I,
         ),
     ),
     (
         "theft_howto",
         re.compile(
-            r"\b(how\s+to\s+)?(steal|robbery|rob\s+a|break\s+into|"
-            r"pickpocket|shoplift|hotwire)\b",
+            r"\b("
+            r"how\s+to\s+(steal|rob|pickpocket|shoplift|hotwire)\b|"
+            r"how\s+to\s+(commit\s+)?(robbery|burglary)\b|"
+            r"how\s+to\s+break\s+into\b"
+            r")",
             re.I,
         ),
     ),
     (
         "hacking_harm_howto",
         re.compile(
-            r"\b(how\s+to\s+)?(hack\s+(into|an?\s+account|password|wifi|bank)|"
-            r"ransomware|credential\s+stuffing|ddos\s+attack|"
-            r"steal\s+(password|credentials|data))\b",
+            # Block offensive hacking *how-tos* only.
+            # Bare words like ransomware / phishing / ddos are normal in cybersecurity
+            # startup and awareness articles and must NOT block drafts.
+            r"\b("
+            r"how\s+to\s+hack\b|"
+            r"hack\s+into\s+(an?\s+)?(account|bank|wifi|password|system|network|email)\b|"
+            r"how\s+to\s+(crack|break\s+into)\s+(a\s+)?(password|wifi|account|system)\b|"
+            r"how\s+to\s+(create|build|write|deploy|spread|launch)\s+(a\s+)?"
+            r"(ransomware|malware|virus|trojan|keylogger)\b|"
+            r"how\s+to\s+(run|perform|launch|carry\s+out)\s+(a\s+)?"
+            r"(ddos(\s+attack)?|credential\s+stuffing)\b|"
+            r"how\s+to\s+steal\s+(passwords?|credentials|data)\b|"
+            r"steal\s+(passwords?|credentials)\s+(from|using|via|with)\b"
+            r")",
             re.I,
         ),
     ),
@@ -167,14 +235,14 @@ class SafetyService:
     """Policy evaluation, constraint extraction, and violation logging."""
 
     def __init__(self) -> None:
-        self._anthropic = None
-        if settings.ANTHROPIC_API_KEY:
+        self._openai = None
+        if settings.OPENAI_API_KEY:
             try:
-                from anthropic import Anthropic
+                from openai import OpenAI
 
-                self._anthropic = Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+                self._openai = OpenAI(api_key=settings.OPENAI_API_KEY)
             except Exception as exc:
-                logger.warning("SafetyService: Anthropic unavailable: %s", exc)
+                logger.warning("SafetyService: OpenAI unavailable: %s", exc)
 
     def evaluate_request(
         self,
@@ -200,11 +268,15 @@ class SafetyService:
             )
 
         if self._is_defensive_allow(text):
+            locked_topic = self._lock_awareness_topic(text, primary_topic)
             return self._result(
                 allowed=True,
                 category="defensive_awareness",
-                reason="Educational / protective security awareness topic",
-                primary_topic=primary_topic,
+                reason=(
+                    "Educational / awareness topic allowed "
+                    "(safe framing locked for downstream agents)"
+                ),
+                primary_topic=locked_topic,
                 constraints=constraints,
                 defensive_allow=True,
             )
@@ -240,6 +312,8 @@ class SafetyService:
             reason = str(llm_decision.get("reason") or "")
             if llm_decision.get("primary_topic"):
                 primary_topic = str(llm_decision["primary_topic"]).strip() or primary_topic
+            if allowed:
+                primary_topic = self._lock_awareness_topic(text, primary_topic)
             decision = self._result(
                 allowed=allowed,
                 category=category,
@@ -251,6 +325,7 @@ class SafetyService:
                 ),
                 primary_topic=primary_topic,
                 constraints=constraints,
+                defensive_allow=allowed and self._is_defensive_allow(text),
             )
             if not allowed:
                 self.log_violation(
@@ -440,6 +515,45 @@ class SafetyService:
         return any(p.search(text) for p in _DEFENSIVE_ALLOW_PATTERNS)
 
     @staticmethod
+    def _lock_awareness_topic(text: str, fallback: str) -> str:
+        """
+        Rewrite awareness prompts into a safe primary topic so Writer/Research
+        do not recreate graphic incidents — only education / trust / protection.
+        """
+        t = (text or "").lower()
+        if re.search(
+            r"\b(nanny|nannies|childcare|caregiver|babysitter|agenc(?:y|ies))\b",
+            t,
+        ):
+            return (
+                "How responsible childcare and nanny agencies screen, train, and "
+                "monitor caregivers — and what parents should check so they can "
+                "hire with more trust"
+            )
+        if re.search(r"\b(nri|nris|non[-\s]?resident)\b", t):
+            return (
+                "How NRIs can spot and avoid local fraud and scams — practical "
+                "awareness and protection tips"
+            )
+        if re.search(r"\b(ai|artificial\s+intelligence)\s+bubble\b", t) or (
+            re.search(r"\b(ai|artificial\s+intelligence)\b", t)
+            and re.search(r"\b(bubble|burst|short[-\s]?term|long[-\s]?term)\b", t)
+        ):
+            return (
+                "Balanced advice on the AI market: short-term bubble risk versus "
+                "long-term AI technology investment opportunities"
+            )
+        if re.search(
+            r"\b(phish|phishing|scam|fraud|hack|cyber|ransomware|malware)\b",
+            t,
+        ):
+            return (
+                "How to protect yourself from online scams, phishing, and cyber "
+                "attacks — practical awareness tips"
+            )
+        return (fallback or text)[:300]
+
+    @staticmethod
     def _match_hard_block(text: str) -> Tuple[str, str]:
         for category, pattern in _HARD_BLOCK_PATTERNS:
             if pattern.search(text):
@@ -485,7 +599,7 @@ class SafetyService:
         return victim_caregiver and draft_caregiver_abuses_child
 
     def _classify_with_llm(self, text: str) -> Optional[Dict[str, Any]]:
-        if not self._anthropic:
+        if not self._openai:
             return None
         if not _SENSITIVE_TERMS.search(text) and len(text) < 40:
             return None
@@ -496,29 +610,33 @@ class SafetyService:
             "allowed (bool), category (string), reason (string), primary_topic (string).\n"
             "BLOCK (allowed=false) when the user wants content that: "
             "depicts or instructs sexual violence, rape, child abuse/exploitation; "
+            "graphic retelling of crimes against children for engagement; "
             "how-to for fraud, scams, theft, hacking for harm; "
             "hate/discrimination by caste, gender, race, region, religion; "
             "religion content that insults faiths or inflames communal conflict; "
             "self-harm instructions; graphic glorification of crime.\n"
-            "ALLOW (allowed=true) defensive/educational safety content such as "
-            "phishing awareness, how to protect from scams/hacking, cybersecurity tips.\n"
-            "primary_topic must restate the user's core topic without changing meaning or roles."
+            "ALLOW (allowed=true) defensive/educational awareness content such as: "
+            "phishing/scam/cyber protection; "
+            "how trusted nanny/childcare agencies screen, train, and monitor differently "
+            "and parent hiring checklists (without graphic abuse detail); "
+            "NRI fraud awareness and protection; "
+            "balanced AI bubble / short-term vs long-term investor education.\n"
+            "When allowing awareness, primary_topic must be a SAFE educational restatement "
+            "(trust, screening, protection, balanced advice) — never a graphic incident narrative."
         )
         user = f"Classify this content request:\n\n{text}"
 
         try:
-            resp = self._anthropic.messages.create(
-                model=settings.ANTHROPIC_MODEL,
+            resp = self._openai.chat.completions.create(
+                model=settings.OPENAI_MODEL,
                 max_tokens=400,
                 temperature=0,
-                system=system,
-                messages=[{"role": "user", "content": user}],
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
             )
-            raw = "".join(
-                block.text
-                for block in resp.content
-                if getattr(block, "type", "") == "text"
-            ).strip()
+            raw = (resp.choices[0].message.content or "").strip()
             raw = re.sub(r"^```(?:json)?\s*", "", raw)
             raw = re.sub(r"\s*```$", "", raw)
             data = json.loads(raw)
