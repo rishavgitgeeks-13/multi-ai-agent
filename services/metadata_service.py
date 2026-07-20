@@ -72,15 +72,13 @@ class MetadataService:
 
         metadata = {
             "title": title,
-            "slug": slug,
+            "slug": slug or self._make_slug(title) or "untitled",
             "meta_title": (
-                seo.get("meta_title")
-                or strategy.get("meta_title")
+                (seo.get("meta_title") or strategy.get("meta_title") or "").strip()
                 or self._derive_meta_title(title, primary_keywords)
             ),
             "meta_description": (
-                seo.get("meta_description")
-                or strategy.get("meta_description")
+                (seo.get("meta_description") or strategy.get("meta_description") or "").strip()
                 or self._derive_meta_description(draft, primary_keywords)
             ),
             "primary_keywords": primary_keywords,
@@ -146,8 +144,8 @@ class MetadataService:
 
     def _derive_meta_description(self, draft: str, keywords: List[str]) -> str:
         """
-        Extract the first non-heading, non-empty paragraph from the draft
-        as the meta description and trim to 155 characters.
+        Extract a usable meta description from the draft.
+        Never return empty when draft has content — fall back to first prose words.
         """
         lines = draft.splitlines()
         for line in lines:
@@ -158,7 +156,30 @@ class MetadataService:
                 # Truncate at last sentence or word boundary
                 trimmed = stripped[:152].rsplit(".", 1)
                 return (trimmed[0] + ".") if len(trimmed) > 1 else stripped[:152] + "…"
-        return ""
+
+        # Fallback: first non-empty non-heading text, padded with keyword context.
+        plain_bits: List[str] = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            # Strip light markdown
+            cleaned = re.sub(r"[*_`]", "", stripped)
+            if cleaned:
+                plain_bits.append(cleaned)
+            if sum(len(b) for b in plain_bits) >= 80:
+                break
+        joined = " ".join(plain_bits).strip()
+        if joined:
+            if len(joined) <= 155:
+                return joined
+            return joined[:152].rsplit(" ", 1)[0] + "…"
+
+        if keywords:
+            lead = str(keywords[0]).strip()
+            if lead:
+                return f"Learn about {lead}."[:155]
+        return "Read this guide for practical insights and next steps."[:155]
 
     # ------------------------------------------------------------------
     # Keyword resolution
