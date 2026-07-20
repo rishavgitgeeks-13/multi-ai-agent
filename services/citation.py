@@ -32,7 +32,7 @@ import logging
 import re
 from typing import Dict, List, Optional
 
-from anthropic import Anthropic
+from openai import OpenAI
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -51,16 +51,16 @@ class CitationService:
     """Extracts and formats citations from the research package."""
 
     def __init__(self) -> None:
-        if not settings.ANTHROPIC_API_KEY:
+        if not settings.OPENAI_API_KEY:
             raise ValueError(
-                "ANTHROPIC_API_KEY is not configured."
+                "OPENAI_API_KEY is not configured."
             )
 
-        self._anthropic = Anthropic(
-            api_key=settings.ANTHROPIC_API_KEY
+        self._openai = OpenAI(
+            api_key=settings.OPENAI_API_KEY
         )
 
-        self._model = settings.ANTHROPIC_MODEL
+        self._model = settings.OPENAI_MODEL
         self._temperature = 0.0  # citations need deterministic output
 
         logger.info(
@@ -213,7 +213,7 @@ class CitationService:
         citations: List[str],
         user_input: str,
     ) -> List[Dict]:
-        """Call the Anthropic model to enrich and format a list of raw citation strings."""
+        """Call the OpenAI model to enrich and format a list of raw citation strings."""
         numbered = "\n".join(f"{i + 1}. {c}" for i, c in enumerate(citations))
         prompt = f"""Format the following raw citation strings into structured citation objects.
 
@@ -239,17 +239,22 @@ Return ONLY a JSON array — one object per citation in the SAME order:
 ]
 No prose. No markdown.
 """
-        response = self._anthropic.messages.create(
+        response = self._openai.chat.completions.create(
             model=self._model,
             max_tokens=1024,
             temperature=self._temperature,
-            system=(
-                "You are a citation formatter. "
-                "Return valid JSON only — no prose, no markdown fences."
-            ),
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a citation formatter. "
+                        "Return valid JSON only — no prose, no markdown fences."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
         )
-        raw = response.content[0].text
+        raw = response.choices[0].message.content or ""
         cleaned = re.sub(r"```(?:json)?", "", raw).strip().strip("`").strip()
 
         try:
