@@ -36,7 +36,8 @@ if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 if "results" not in st.session_state:
     st.session_state.results = {}          # keyed by tab name
-API_BASE_URL = "http://54.218.34.106:9000"
+#API_BASE_URL = "http://54.218.34.106:9000"
+API_BASE_URL = "http://localhost:8000"
 
 # Always point at the deployed API (do not let an old empty session value stick).
 st.session_state.api_url = API_BASE_URL
@@ -375,7 +376,7 @@ if not st.session_state.brands:
 # ==========================================================================
 
 st.title("📝 Editorial Intelligence System")
-st.caption("Multi-agent content generation · Powered by Anthropic Claude & LangGraph")
+st.caption("Multi-agent content generation · Powered by OpenAI & LangGraph")
 st.divider()
 
 # ==========================================================================
