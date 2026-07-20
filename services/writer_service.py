@@ -32,7 +32,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from anthropic import Anthropic
+from openai import OpenAI
 from config.settings import settings
 
 
@@ -85,6 +85,8 @@ class ContentOutline:
     tone: str
     cta: str
     sections: List[ContentSection]
+    brand_name: str = ""
+    awareness_first: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -96,24 +98,162 @@ class WriterService:
     """Produces the full-length Markdown draft from the strategy package."""
 
     def __init__(self) -> None:
-        # Fail fast if Claude credentials are missing.
-        if not settings.ANTHROPIC_API_KEY:
+        # Fail fast if OpenAI credentials are missing.
+        if not settings.OPENAI_API_KEY:
             raise ValueError(
-                "ANTHROPIC_API_KEY is not configured."
+                "OPENAI_API_KEY is not configured."
             )
 
-        # Authenticated Anthropic client.
-        self._anthropic = Anthropic(
-            api_key=settings.ANTHROPIC_API_KEY
+        # Authenticated OpenAI client.
+        self._openai = OpenAI(
+            api_key=settings.OPENAI_API_KEY
         )
 
-        self._model = settings.ANTHROPIC_MODEL
+        self._model = settings.OPENAI_MODEL
         self._temperature = settings.DEFAULT_TEMPERATURE
         self._max_tokens = settings.MAX_TOKENS
 
         logger.info(
             "WriterService ready | model=%s",
             self._model,
+        )
+
+    @staticmethod
+    def _brand_display_name(brand_context: Dict) -> str:
+        return str(
+            brand_context.get("display_name")
+            or brand_context.get("brand")
+            or ""
+        ).strip()
+
+    @staticmethod
+    def _is_awareness_first(brand_context: Dict) -> bool:
+        """
+        Kinvo (and brands marked content_style=awareness_first) should educate
+        before pitching. Other brands keep existing sales-friendly flow.
+        """
+        style = str(brand_context.get("content_style") or "").strip().lower()
+        if style == "awareness_first":
+            return True
+        ns = str(
+            brand_context.get("namespace") or brand_context.get("brand") or ""
+        ).strip().lower()
+        name = WriterService._brand_display_name(brand_context).lower()
+        return ns == "kinvo" or "kinvo" in name
+
+    @staticmethod
+    def _awareness_first_rules(brand_name: str, cta: str) -> str:
+        brand = (brand_name or "the brand").strip()
+        cta_line = (cta or "").strip() or "the brand CTA"
+        return f"""
+AWARENESS-FIRST PACING (mandatory — write an awareness piece, not a sales brochure):
+- Lead with the reader's real challenge, emotions, and practical guidance.
+- Keep emotional connection strong: do not jump from the problem straight into product features.
+- Do NOT mention {brand} in the introduction or in the first half of the body sections.
+- Most of the article must remain useful education a reader can act on without buying.
+- Introduce {brand} only in a late body section (near the end), as one concrete example of a structured approach — not the whole article.
+- Place the CTA "{cta_line}" only in the conclusion (verbatim), not as a hard sell in every section.
+- Avoid brochure language early (e.g. feature lists, "premium families choose us") until the late brand section.
+"""
+
+    @staticmethod
+    def _stat_context_rules() -> str:
+        return (
+            "- When citing RESEARCH STATS, include source name plus year and/or scope "
+            "(geography, sample, report name) when those details appear in the snippet. "
+            "Do not invent missing year/scope; if absent, attribute what is available and avoid overclaiming."
+        )
+
+    # Meta / workflow phrases that must never be pasted into published copy.
+    _LEAKY_KEYWORD_RE = re.compile(
+        r"("
+        r"\b(linkedin|twitter|x|instagram|facebook|carousel)\s+announc\w*\b|"
+        r"\b(linkedin|carousel|email|x)\s+format\b|"
+        r"\b(seo\s+requirements|additional\s+user\s+instructions|revision\s+notes)\b|"
+        r"\bthis\s+is\s+a\s+(newsletter|nurture|promotional|transactional)\s+email\b|"
+        r"\bcampaign\s+type\b|"
+        r"\b(target\s+keyword\s+density|primary\s+keyword\s+in\s+the\s+h1)\b"
+        r")",
+        re.I,
+    )
+
+    @classmethod
+    def _is_leaky_keyword(cls, keyword: str) -> bool:
+        """True when a 'keyword' looks like prompt/meta text, not a searchable phrase."""
+        kw = (keyword or "").strip()
+        if not kw:
+            return True
+        words = kw.split()
+        # Long run-ons are usually prompt fragments, not placeable SEO terms.
+        if len(words) > 8:
+            return True
+        if cls._LEAKY_KEYWORD_RE.search(kw):
+            return True
+        # Platform label as the start of a multi-word "keyword" (e.g. "linkedin announcing…")
+        if len(words) >= 2 and re.match(
+            r"^(linkedin|twitter|instagram|facebook|carousel|newsletter)\b",
+            kw,
+            re.I,
+        ):
+            return True
+        return False
+
+    @classmethod
+    def _filter_placeable_keywords(cls, keywords: Optional[List[str]], limit: int) -> List[str]:
+        cleaned: List[str] = []
+        for raw in keywords or []:
+            kw = str(raw).strip()
+            if not kw or cls._is_leaky_keyword(kw):
+                continue
+            if kw.lower() in {c.lower() for c in cleaned}:
+                continue
+            cleaned.append(kw)
+            if len(cleaned) >= limit:
+                break
+        return cleaned
+
+    @classmethod
+    def _format_editorial_intent(cls, additional_instructions: str) -> str:
+        """
+        Present extra guidance as intent only so the model does not paste it
+        into the draft (root cause of 'linkedin announcing…' style leaks).
+        """
+        text = (additional_instructions or "").strip()
+        if not text:
+            return ""
+        # Cap size so huge instruction dumps are less likely to be echoed.
+        if len(text) > 1200:
+            text = text[:1200].rstrip() + "…"
+        return (
+            "\nEDITORIAL INTENT (follow the meaning only — "
+            "NEVER copy, quote, or paraphrase this block into the published draft; "
+            "never mention platform/format labels like 'LinkedIn announcing', "
+            "'LINKEDIN FORMAT', 'SEO REQUIREMENTS', or campaign-type boilerplate):\n"
+            f"{text}\n"
+        )
+
+    @staticmethod
+    def _no_prompt_leak_rules() -> str:
+        return (
+            "- NEVER paste workflow meta into the draft: platform names as announcements "
+            "('linkedin announcing…'), format labels, 'ADDITIONAL/EDITORIAL INTENT' text, "
+            "SEO requirement boilerplate, or campaign-type labels.\n"
+            "- Keywords are topics to cover naturally — do not insert raw keyword strings "
+            "as awkward mid-sentence clauses or run-on SEO phrases.\n"
+            "- If a keyword reads like an instruction or channel brief, ignore it."
+        )
+
+    @staticmethod
+    def _grounding_rules(brand_name: str = "") -> str:
+        brand = (brand_name or "the brand").strip()
+        return (
+            f"- Do NOT invent facts about {brand}: no fabricated case studies, win counts, "
+            "client names, completed engagements, proprietary frameworks, or \"we routinely…\" "
+            "performance claims unless they appear in RESEARCH STATS / CITATIONS / brand inputs.\n"
+            "- Do NOT invent statistics, report titles, or attributed figures "
+            "(McKinsey, GSMA, Ericsson, etc.). Use only numbers present in RESEARCH STATS / "
+            "CITATIONS; if none are available, write without numeric claims.\n"
+            "- Prefer hedged qualitative language over unsupported precision."
         )
 
     # ------------------------------------------------------------------
@@ -150,6 +290,9 @@ class WriterService:
         research_ctx = self._build_research_context(research_data)
         rewrite_instruction = str(strategy.get("rewrite_instruction", "")).strip()
         primary_keywords, secondary_keywords = self._resolve_seo_keywords(strategy)
+        # Drop prompt/meta fragments that the model would otherwise paste into prose.
+        primary_keywords = self._filter_placeable_keywords(primary_keywords, limit=4)
+        secondary_keywords = self._filter_placeable_keywords(secondary_keywords, limit=8)
         target_words = self._resolve_target_words(content_type, strategy)
         topic_lock = (primary_topic or strategy.get("primary_topic") or user_input or "").strip()
 
@@ -190,14 +333,59 @@ class WriterService:
                 additional_instructions=additional_instructions,
             )
 
+        # Never keep an empty model response — retry once, then fall back to previous draft.
+        if not (draft or "").strip():
+            logger.warning(
+                "Writer returned empty draft — retrying once | content_type=%s",
+                content_type,
+            )
+            if content_type in SHORT_FORM_TYPES:
+                draft = self._write_short_form(
+                    outline=outline,
+                    research_ctx=research_ctx,
+                    content_type=content_type,
+                    platform=platform,
+                    rewrite_instruction=rewrite_instruction,
+                    primary_keywords=primary_keywords,
+                    secondary_keywords=secondary_keywords,
+                    target_words=target_words,
+                    primary_topic=topic_lock,
+                    additional_instructions=additional_instructions,
+                )
+            else:
+                draft = self._write_long_form(
+                    outline=outline,
+                    research_ctx=research_ctx,
+                    content_type=content_type,
+                    rewrite_instruction=(
+                        rewrite_instruction
+                        or "Write the complete article from scratch. Do not return empty output."
+                    ),
+                    primary_keywords=primary_keywords,
+                    secondary_keywords=secondary_keywords,
+                    target_words=target_words,
+                    primary_topic=topic_lock,
+                    additional_instructions=additional_instructions,
+                )
+
+        if not (draft or "").strip() and previous_draft.strip():
+            logger.warning(
+                "Writer still empty after retry — keeping previous draft (%d words)",
+                len(previous_draft.split()),
+            )
+            draft = previous_draft
+
         # Deterministic quality boost: ensure attributed research stats are present.
-        if content_type in LONG_FORM_TYPES and target_words >= 400:
+        if content_type in LONG_FORM_TYPES and target_words >= 400 and (draft or "").strip():
             draft = self._enrich_factual_grounding(
                 draft=draft,
                 research_ctx=research_ctx,
                 outline=outline,
                 secondary_keywords=secondary_keywords,
             )
+
+        # Strip common AI-cliché openers that models still insert despite prompts.
+        draft = self._strip_ai_cliches(draft or "")
 
         logger.info(
             "WriterService complete | content_type=%s | words=%d | target=%s",
@@ -269,6 +457,22 @@ class WriterService:
             content_type=content_type,
         )
 
+    @staticmethod
+    def _resolve_audience(strategy: Dict, brand_context: Dict) -> str:
+        """
+        Prefer brand reader_segment so Writer never invents a wrong audience
+        when strategy.audience is stale/empty.
+        """
+        audience = (
+            brand_context.get("reader_segment")
+            or strategy.get("audience")
+            or []
+        )
+        if isinstance(audience, list):
+            return ", ".join(str(a) for a in audience if str(a).strip()) or "the target audience"
+        text = str(audience).strip()
+        return text or "the target audience"
+
     def _parse_strategy_outline(
         self,
         strategy: Dict,
@@ -292,12 +496,7 @@ class WriterService:
                     brief="",
                 ))
 
-        audience = strategy.get("audience") or brand_context.get("reader_segment", [])
-        audience_str = (
-            ", ".join(str(a) for a in audience)
-            if isinstance(audience, list)
-            else str(audience)
-        )
+        audience_str = self._resolve_audience(strategy, brand_context)
 
         return ContentOutline(
             title=strategy.get("title", ""),
@@ -306,6 +505,8 @@ class WriterService:
             tone=strategy.get("tone") or brand_context.get("tone") or "professional",
             cta=strategy.get("cta") or brand_context.get("cta") or "",
             sections=sections,
+            brand_name=self._brand_display_name(brand_context),
+            awareness_first=self._is_awareness_first(brand_context),
         )
 
     def _generate_outline(
@@ -315,31 +516,57 @@ class WriterService:
         brand_context: Dict,
         content_type: str,
     ) -> ContentOutline:
-        """Generate a full ContentOutline using the Anthropic model."""
+        """Generate a full ContentOutline using the OpenAI model."""
         target_words = WORD_COUNT_TARGETS.get(content_type, 1800)
         n_sections = "2–4" if content_type in SHORT_FORM_TYPES else "4–7"
 
-        audience = strategy.get("audience") or brand_context.get("reader_segment", [])
-        audience_str = (
-            ", ".join(str(a) for a in audience)
-            if isinstance(audience, list)
-            else str(audience)
-        )
+        audience_str = self._resolve_audience(strategy, brand_context)
         tone = strategy.get("tone") or brand_context.get("tone") or "professional"
-        primary_keywords = (
-            strategy.get("keywords")
-            or brand_context.get("keyword_direction", [])
+        primary_keywords = self._filter_placeable_keywords(
+            strategy.get("keywords") or brand_context.get("keyword_direction", []),
+            limit=3,
         )
-        secondary_keywords = strategy.get("secondary_keywords") or []
+        secondary_keywords = (
+            []
+            if content_type in SHORT_FORM_TYPES
+            else self._filter_placeable_keywords(
+                strategy.get("secondary_keywords") or [],
+                limit=6,
+            )
+        )
         pain_points = strategy.get("pain_points") or brand_context.get("pain_points", [])
 
-        primary_str = ", ".join(str(k) for k in primary_keywords[:3]) or "none"
-        secondary_str = ", ".join(str(k) for k in secondary_keywords[:6]) or "none"
+        primary_str = ", ".join(primary_keywords) or "none"
+        secondary_str = ", ".join(secondary_keywords) or "none"
+        brand_name = self._brand_display_name(brand_context)
+        awareness_first = self._is_awareness_first(brand_context)
+
+        awareness_outline_rules = ""
+        if awareness_first:
+            awareness_outline_rules = f"""
+- Sections flow: empathy/problem → practical education → actionable framework → brand solution (late) → close toward CTA
+- Do NOT put "{brand_name or 'the brand'}" in the first half of section headings or briefs
+- Brand/product section(s) only in the final 1–2 body sections (before the reader reaches the CTA)
+- Early section briefs must teach and support the reader; they must not be feature pitches
+"""
+        else:
+            awareness_outline_rules = """
+- Sections flow: problem → solution → proof → CTA
+"""
+
+        keyword_assign_rule = (
+            "- Do NOT assign secondary keywords to sections; keep keywords empty or use at most one primary phrase"
+            if content_type in SHORT_FORM_TYPES
+            else (
+                "- At least one H2 heading should include a primary or secondary keyword\n"
+                "- Assign each section 1 primary-or-secondary keyword in \"keywords\" (do not invent new ones)"
+            )
+        )
 
         prompt = f"""Create a detailed content outline for a {content_type}.
 
 USER QUERY      : {user_input}
-BRAND           : {brand_context.get("display_name") or brand_context.get("brand", "")}
+BRAND           : {brand_name}
 CONTENT ANGLE   : {strategy.get("content_angle", "")}
 TONE            : {tone}
 AUDIENCE        : {audience_str}
@@ -365,10 +592,8 @@ Return a JSON object with this exact schema:
 
 Rules:
 - {n_sections} sections
-- Sections flow: problem → solution → proof → CTA
-- H1 title MUST include the first primary keyword naturally
-- At least one H2 heading should include a primary or secondary keyword
-- Assign each section 1 primary-or-secondary keyword in "keywords" (do not invent new ones)
+{awareness_outline_rules}- H1 title MUST include the first primary keyword naturally
+{keyword_assign_rule}
 - Headings are benefit-driven and keyword-rich
 - Each brief is specific enough to write a full section from
 - Return ONLY the JSON object — no prose, no markdown fences
@@ -413,12 +638,7 @@ Rules:
             if isinstance(s, dict)
         ]
 
-        audience = strategy.get("audience") or brand_context.get("reader_segment", [])
-        audience_str = (
-            ", ".join(str(a) for a in audience)
-            if isinstance(audience, list)
-            else str(audience)
-        )
+        audience_str = self._resolve_audience(strategy, brand_context)
 
         return ContentOutline(
             title=str(data.get("title", "")),
@@ -427,6 +647,8 @@ Rules:
             tone=strategy.get("tone") or brand_context.get("tone") or "professional",
             cta=strategy.get("cta") or brand_context.get("cta") or "",
             sections=sections,
+            brand_name=self._brand_display_name(brand_context),
+            awareness_first=self._is_awareness_first(brand_context),
         )
 
     def _fallback_outline(
@@ -436,25 +658,59 @@ Rules:
         brand_context: Dict,
     ) -> ContentOutline:
         """Rule-based fallback when LLM outline generation fails."""
-        audience = strategy.get("audience") or brand_context.get("reader_segment", [])
-        audience_str = (
-            ", ".join(str(a) for a in audience)
-            if isinstance(audience, list)
-            else str(audience)
-        )
+        audience_str = self._resolve_audience(strategy, brand_context)
+        brand_name = self._brand_display_name(brand_context)
+        awareness_first = self._is_awareness_first(brand_context)
+        if awareness_first:
+            sections = [
+                ContentSection(
+                    "The Real Challenge Families Face",
+                    2,
+                    "Name the emotional and practical problem without pitching a product.",
+                    [],
+                ),
+                ContentSection(
+                    "What Usually Goes Wrong",
+                    2,
+                    "Explain common gaps in informal approaches with empathy.",
+                    [],
+                ),
+                ContentSection(
+                    "What a Solid Plan Actually Includes",
+                    2,
+                    "Practical checklist/framework readers can use independently.",
+                    [],
+                ),
+                ContentSection(
+                    "How a Structured Provider Helps",
+                    2,
+                    f"Late, concrete example of how {brand_name or 'a verified provider'} supports the plan.",
+                    [],
+                ),
+                ContentSection(
+                    "Next Steps With Confidence",
+                    2,
+                    "Close the educational loop; soft path toward the CTA.",
+                    [],
+                ),
+            ]
+        else:
+            sections = [
+                ContentSection("The Core Challenge", 2, "Define the problem and why it matters.", []),
+                ContentSection("Why Existing Approaches Fall Short", 2, "Gaps in current solutions.", []),
+                ContentSection("The Solution", 2, "Practical approach with concrete steps.", []),
+                ContentSection("Key Benefits & Outcomes", 2, "Measurable results readers can expect.", []),
+                ContentSection("Getting Started", 2, "Actionable first steps for the reader.", []),
+            ]
         return ContentOutline(
             title=user_input[:80],
             content_angle="Practical guide",
             audience=audience_str,
             tone=strategy.get("tone") or brand_context.get("tone") or "professional",
             cta=strategy.get("cta") or brand_context.get("cta") or "",
-            sections=[
-                ContentSection("The Core Challenge", 2, "Define the problem and why it matters.", []),
-                ContentSection("Why Existing Approaches Fall Short", 2, "Gaps in current solutions.", []),
-                ContentSection("The Solution", 2, "Practical approach with concrete steps.", []),
-                ContentSection("Key Benefits & Outcomes", 2, "Measurable results readers can expect.", []),
-                ContentSection("Getting Started", 2, "Actionable first steps for the reader.", []),
-            ],
+            sections=sections,
+            brand_name=brand_name,
+            awareness_first=awareness_first,
         )
 
     # ------------------------------------------------------------------
@@ -547,9 +803,7 @@ PRIMARY TOPIC LOCK (mandatory — do not change meaning, roles, or subject):
 {primary_topic}
 """
 
-        extra_block = ""
-        if additional_instructions.strip():
-            extra_block = f"\nADDITIONAL USER INSTRUCTIONS:\n{additional_instructions.strip()}\n"
+        extra_block = self._format_editorial_intent(additional_instructions)
 
         # Micro / short long-form when user asks for very few words
         length_rules = (
@@ -558,8 +812,12 @@ PRIMARY TOPIC LOCK (mandatory — do not change meaning, roles, or subject):
             else f"TARGET LENGTH   : ~{target_words} words"
         )
 
+        awareness_block = ""
+        if outline.awareness_first:
+            awareness_block = self._awareness_first_rules(outline.brand_name, outline.cta)
+
         prompt = f"""Write a complete {content_type} in Markdown.
-{revision_block}{topic_block}{extra_block}
+{revision_block}{topic_block}{extra_block}{awareness_block}
 TITLE           : {outline.title}
 CONTENT ANGLE   : {outline.content_angle}
 AUDIENCE        : {outline.audience}
@@ -588,6 +846,8 @@ SEO placement rules (mandatory):
 
 Content rules:
 - Write like a human, not an AI: vary sentence and paragraph length, use natural transitions and contractions, avoid clichéd filler phrases (no "in today's fast-paced world", "moreover", "furthermore", "in conclusion", "it's worth noting", "dive in", "game-changer", "a testament to", "unlock the power")
+{self._no_prompt_leak_rules()}
+{self._grounding_rules(outline.brand_name)}
 - Stay strictly on the PRIMARY TOPIC LOCK — never invert victims/roles or change the subject
 - Write a hook-driven introduction (100–150 words, no heading under the H1) unless target length is under 400 words — then keep intro proportional
 - Cover every outline section as `##` headings (scale section length to hit ~{target_words} words total)
@@ -595,7 +855,8 @@ Content rules:
 - End with `## Conclusion` that recaps and closes with the exact CTA: {outline.cta}
 - Prefer CTA wording like "Book an AI Discovery Call" style specificity — do not use vague "reach out today"
 - When RESEARCH STATS lists any items and target length >= 400, embed at least 3 attributed statistics in the article body
-  (intro or early body, one mid-article, one in proof/closing). Format: "According to <Source>: <figure>…"
+  (intro or early body, one mid-article, one in proof/closing). Format: "According to <Source> (Year if available): <figure>…"
+{self._stat_context_rules()}
 - When a proof / case-study / real-world section appears in the outline, ground it with research stats or named citations above — do not use brand name alone as proof
 - Never invent percentages, benchmarks, financial figures, organisation names, or report titles
 - Do not state absolute industry claims (e.g. "most startups fail because…") unless that exact claim appears in RESEARCH STATS or CITATIONS AVAILABLE; otherwise hedge or omit
@@ -637,13 +898,17 @@ Write the complete {content_type}:
         if len(draft_for_edit) > 14000:
             draft_for_edit = previous_draft[:7000] + "\n\n…\n\n" + previous_draft[-5000:]
 
+        awareness_block = ""
+        if outline.awareness_first:
+            awareness_block = self._awareness_first_rules(outline.brand_name, outline.cta)
+
         prompt = f"""Revise the existing {content_type} Markdown. Do NOT rewrite from scratch.
 
 EDITOR FEEDBACK (must fix):
 {rewrite_instruction}
 
 Preserve the overall structure, headings, and voice. Make targeted edits only.
-
+{awareness_block}
 BRAND TONE (exact) : {outline.tone}
 AUDIENCE           : {outline.audience}
 CTA (verbatim)     : {outline.cta}
@@ -659,6 +924,7 @@ CITATIONS AVAILABLE:
 Mandatory edit checklist:
 1. Insert at least 3 attributed statistics from RESEARCH STATS (named source + concrete figure).
    Prefer placing one in the intro, one in a mid-body/proof section, and one near the conclusion.
+{self._stat_context_rules()}
 2. Remove or hedge absolute uncited claims; never invent org names/years/%.
 3. Place at least 1 secondary keyword naturally in the introduction AND 1 in the conclusion body
    (not only in H2 headings).
@@ -713,6 +979,14 @@ Return the FULL revised Markdown article only — no preamble.
             return draft
 
         secondary_line = ", ".join(missing_secondary) if missing_secondary else "none"
+        awareness_line = ""
+        if outline.awareness_first:
+            brand = outline.brand_name or "the brand"
+            awareness_line = (
+                f"6. Keep awareness-first pacing: if {brand} appears in the introduction "
+                "or early body, move that pitch to a late body section; do not turn the "
+                "piece into a sales brochure.\n"
+            )
         prompt = f"""Improve factual grounding of this Markdown article with MINIMAL edits.
 
 Tone to preserve: {outline.tone}
@@ -727,11 +1001,12 @@ CITATIONS:
 Required edits:
 1. Ensure at least 3 clearly attributed statistics appear (intro, mid-body or proof, near close).
    Format: "According to <Source> (Year): <figure>…"
+{self._stat_context_rules()}
 2. If listed, weave these secondary keywords naturally into intro and/or conclusion: {secondary_line}
 3. Do not invent figures, organisations, or years.
 4. Do not use the $ character — write USD amounts.
 5. Keep structure/headings; return the FULL revised Markdown only.
-
+{awareness_line}
 DRAFT:
 {draft[:12000]}
 """
@@ -901,20 +1176,22 @@ Write the conclusion:
         if target_words is None:
             target_words = WORD_COUNT_TARGETS.get(content_type, 600)
         format_rules = self._format_rules(content_type, platform)
-        primary = [str(k) for k in (primary_keywords or []) if str(k).strip()][:2]
-        secondary = [str(k) for k in (secondary_keywords or []) if str(k).strip()][:4]
+        primary = self._filter_placeable_keywords(primary_keywords, limit=2)
+        # Short-form: do not push secondary keywords into the prompt (avoids stuffing).
+        secondary: List[str] = []
 
         topic_block = ""
         if primary_topic:
             topic_block = (
                 f"\nPRIMARY TOPIC LOCK (do not change meaning/roles):\n{primary_topic}\n"
             )
-        extra_block = ""
-        if additional_instructions.strip():
-            extra_block = f"\nADDITIONAL USER INSTRUCTIONS:\n{additional_instructions.strip()}\n"
+        extra_block = self._format_editorial_intent(additional_instructions)
         rewrite_block = ""
         if rewrite_instruction.strip():
-            rewrite_block = f"\nREVISION NOTES:\n{rewrite_instruction.strip()}\n"
+            rewrite_block = (
+                "\nREVISION NOTES (apply meaning only — do not paste this text into the draft):\n"
+                f"{rewrite_instruction.strip()}\n"
+            )
 
         prompt = f"""Write a complete {content_type} for {platform}.
 {topic_block}{extra_block}{rewrite_block}
@@ -937,10 +1214,12 @@ FORMAT REQUIREMENTS:
 {format_rules}
 
 SEO notes:
-- Include the first primary keyword early and naturally
-- Weave 1–2 secondary keywords only if they fit the platform tone
+- Include the first primary keyword early and naturally if it fits
+- Do not use secondary keywords in short-form posts/emails
 - Do not keyword-stuff
 - Stay strictly on the primary topic; never divert or invert roles
+{self._no_prompt_leak_rules()}
+{self._grounding_rules(outline.brand_name)}
 
 Human voice (important):
 - Sound like a real person, not AI. Vary sentence length, use contractions, be specific
@@ -950,7 +1229,9 @@ Write the complete {content_type}:
 """
         max_tok = 512 if target_words <= 50 else 2048
         return self._call_llm(
-            system=self._system_prompt(outline, rewrite_instruction, primary_topic),
+            system=self._system_prompt(
+                outline, rewrite_instruction, primary_topic, long_form=False
+            ),
             user=prompt,
             max_tokens=max_tok,
         )
@@ -982,6 +1263,7 @@ Write the complete {content_type}:
         outline: ContentOutline,
         rewrite_instruction: str = "",
         primary_topic: str = "",
+        long_form: bool = True,
     ) -> str:
         """Shared system prompt that frames the LLM as a focused, human-sounding writer."""
         base = (
@@ -990,8 +1272,10 @@ Write the complete {content_type}:
             "You follow formatting instructions exactly, never add meta-commentary, "
             "and return only the requested content — no preamble, no sign-off. "
             "Never invent abusive, discriminatory, or illegal how-to content. "
-            "Never divert from the user's primary topic or invert roles/meaning.\n\n"
-            + self._human_voice_guide()
+            "Never divert from the user's primary topic or invert roles/meaning. "
+            "Never paste editorial-intent blocks, platform/format labels, or raw SEO "
+            "instruction text into the published draft.\n\n"
+            + self._human_voice_guide(long_form=long_form)
         )
         if primary_topic:
             base += f"\n\nPRIMARY TOPIC LOCK:\n{primary_topic}"
@@ -1003,8 +1287,14 @@ Write the complete {content_type}:
         return base
 
     @staticmethod
-    def _human_voice_guide() -> str:
+    def _human_voice_guide(long_form: bool = True) -> str:
         """Balanced, brand-safe rules that make output read as human-written."""
+        secondary_line = ""
+        if long_form:
+            secondary_line = (
+                "- Place at least one secondary keyword naturally in the introduction "
+                "and one in the conclusion.\n"
+            )
         return (
             "WRITE LIKE A HUMAN (critical — content must not read as AI-generated):\n"
             "- Vary sentence length and rhythm. Mix short, punchy sentences with longer ones. "
@@ -1017,6 +1307,8 @@ Write the complete {content_type}:
             "\"dive in\"/\"dive deep\", \"unlock the power\", \"unleash\", \"a game-changer\", "
             "\"a testament to\", \"plays a crucial/vital/pivotal role\", \"navigating the\", "
             "\"elevate your\", \"rest assured\", \"look no further\", \"we've got you covered\".\n"
+            "- Never start a sentence with Moreover, Furthermore, Additionally, or In conclusion.\n"
+            f"{secondary_line}"
             "- Use contractions naturally (it's, you're, don't, we've).\n"
             "- Prefer concrete, specific nouns and real examples over vague generalities.\n"
             "- Address the reader directly with \"you\" where it fits; light first-person (\"we\") is fine.\n"
@@ -1067,7 +1359,7 @@ Write the complete {content_type}:
         )
 
     # ------------------------------------------------------------------
-    # Anthropic wrapper
+    # OpenAI wrapper
     # ------------------------------------------------------------------
 
     def _call_llm(
@@ -1076,15 +1368,63 @@ Write the complete {content_type}:
         user: str,
         max_tokens: Optional[int] = None,
     ) -> str:
-        """Invoke the Anthropic model and return the plain text response."""
-        response = self._anthropic.messages.create(
-            model=self._model,
-            max_tokens=max_tokens or self._max_tokens,
-            temperature=self._temperature,
-            system=system,
-            messages=[{"role": "user", "content": user}],
-        )
-        return response.content[0].text
+        """Invoke the OpenAI model and return plain text (retry once if empty)."""
+        last_text = ""
+        for attempt in range(2):
+            response = self._openai.chat.completions.create(
+                model=self._model,
+                max_tokens=max_tokens or self._max_tokens,
+                temperature=self._temperature,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+            )
+            choice = response.choices[0]
+            text = (choice.message.content or "").strip()
+            finish = getattr(choice, "finish_reason", None)
+            if text:
+                return text
+            logger.warning(
+                "OpenAI returned empty content | attempt=%d | finish_reason=%s",
+                attempt + 1,
+                finish,
+            )
+            last_text = text
+        return last_text
+
+    @staticmethod
+    def _strip_ai_cliches(draft: str) -> str:
+        """
+        Deterministic cleanup of common AI-tell openers/transitions.
+        Does not rewrite meaning — only removes/replaces stock phrases.
+        """
+        if not draft:
+            return draft
+        replacements = [
+            (r"(?i)\bMoreover,\s*", ""),
+            (r"(?i)\bFurthermore,\s*", ""),
+            (r"(?i)\bAdditionally,\s*", ""),
+            (r"(?i)\bIn conclusion,\s*", ""),
+            (r"(?i)\bIn summary,\s*", ""),
+            (r"(?i)\bTo sum up,\s*", ""),
+            (r"(?i)\bIt'?s worth noting that\s*", ""),
+            (r"(?i)\bIt is worth noting that\s*", ""),
+            (r"(?i)\bIt'?s important to note that\s*", ""),
+            (r"(?i)\bIt is important to note that\s*", ""),
+            (r"(?i)\bIn today'?s fast-paced world,?\s*", ""),
+            (r"(?i)\bIn today'?s digital age,?\s*", ""),
+            (r"(?i)\bWhen it comes to\s+", "For "),
+            (r"(?i)\bAt the end of the day,?\s*", ""),
+            (r"(?i)\bNeedless to say,?\s*", ""),
+        ]
+        text = draft
+        for pattern, repl in replacements:
+            text = re.sub(pattern, repl, text)
+        # Clean doubled spaces left by removals (preserve newlines)
+        text = re.sub(r"[ \t]{2,}", " ", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
 
     # ------------------------------------------------------------------
     # String utility
