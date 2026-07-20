@@ -74,7 +74,7 @@ app = FastAPI(
     description=(
         "Multi-agent editorial intelligence system. "
         "Generates SEO-optimised content, email campaigns, and social posts "
-        "using a LangGraph pipeline powered by Anthropic Claude."
+        "using a LangGraph pipeline powered by OpenAI."
     ),
     version="1.0.0",
     lifespan=lifespan,
