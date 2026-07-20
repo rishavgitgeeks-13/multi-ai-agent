@@ -21,11 +21,9 @@ class Settings(BaseSettings):
     # LLM Providers
     # ==========================================================
     OPENAI_API_KEY: str
+    OPENAI_MODEL: str = "gpt-4.1"
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
     OPENAI_EMBEDDING_DIMENSION: int = 1536
-
-    ANTHROPIC_API_KEY: str | None = None
-    ANTHROPIC_MODEL: str = "claude-sonnet-4-6"
 
     # ==========================================================
     # Vector Database
