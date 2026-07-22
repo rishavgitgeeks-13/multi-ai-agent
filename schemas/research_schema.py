@@ -25,9 +25,9 @@ class ResearchSource(BaseModel):
     url: str = ""
     source_type: str = ""
     """
-    web      – Tavily / Firecrawl web search result
+    web      – Tavily / DuckDuckGo web search result
     kb       – internal brand knowledge base hit
-    news     – News API article
+    news     – Google News RSS / NewsAPI article
     youtube  – YouTube transcript snippet
     reddit   – Reddit discussion thread
     """
