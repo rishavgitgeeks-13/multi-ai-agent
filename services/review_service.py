@@ -141,6 +141,8 @@ class ReviewService:
         strategy: Dict,
         brand_context: Dict,
         revision_count: int = 0,
+        primary_topic: str = "",
+        user_input: str = "",
     ) -> Dict:
         """Evaluate the draft and return a structured review decision."""
         logger.info(
@@ -148,6 +150,8 @@ class ReviewService:
             revision_count,
             len((draft or "").split()),
         )
+
+        brief = (primary_topic or user_input or "").strip()
 
         # Hard fail empty drafts immediately (no LLM spend on blank content).
         if not (draft or "").strip():
@@ -172,6 +176,11 @@ class ReviewService:
                     "Markdown only — never return an empty response. Use a natural "
                     "human voice (no Moreover/Furthermore/In conclusion)."
                     + secondary_bit
+                    + (
+                        f" Stay on this primary brief: {brief[:240]}"
+                        if brief
+                        else ""
+                    )
                 ),
                 "dimension_scores": {d: 0 for d in DIMENSION_WEIGHTS},
                 "revision_number": revision_count + 1,
@@ -179,6 +188,10 @@ class ReviewService:
 
         # Rule-based pre-checks (fast, no LLM)
         pre_check_issues = self._run_pre_checks(draft, strategy)
+        if brief:
+            fidelity_issue = self._topic_fidelity_issue(brief, draft)
+            if fidelity_issue:
+                pre_check_issues.append(fidelity_issue)
 
         # LLM evaluation (all dimensions in one call)
         llm_result = self._evaluate_via_llm(
@@ -186,6 +199,7 @@ class ReviewService:
             strategy=strategy,
             brand_context=brand_context,
             pre_check_issues=pre_check_issues,
+            primary_topic=brief,
         )
 
         # Weighted final score
@@ -195,6 +209,32 @@ class ReviewService:
         if found_tells:
             dim_scores["natural_voice"] = min(
                 int(dim_scores.get("natural_voice", 50)),
+                60,
+            )
+
+        # Off-brief drafts must not pass with a high content_quality score.
+        fidelity_flags = " ".join(str(i).lower() for i in pre_check_issues)
+        if any(
+            flag in fidelity_flags
+            for flag in (
+                "off-brief",
+                "india geography",
+                "year-range",
+                "audience/stats",
+                "weak citation",
+                "facebook",
+            )
+        ):
+            dim_scores["content_quality"] = min(
+                int(dim_scores.get("content_quality", 50)),
+                65,
+            )
+            dim_scores["seo_compliance"] = min(
+                int(dim_scores.get("seo_compliance", 50)),
+                70,
+            )
+            dim_scores["factual_grounding"] = min(
+                int(dim_scores.get("factual_grounding", 50)),
                 60,
             )
 
@@ -445,6 +485,7 @@ class ReviewService:
         strategy: Dict,
         brand_context: Dict,
         pre_check_issues: List[str],
+        primary_topic: str = "",
     ) -> Dict:
         """
         Run a single OpenAI call that scores all six dimensions
@@ -455,6 +496,7 @@ class ReviewService:
             strategy=strategy,
             brand_context=brand_context,
             pre_check_issues=pre_check_issues,
+            primary_topic=primary_topic,
         )
         try:
             response = self._openai.chat.completions.create(
@@ -484,6 +526,7 @@ class ReviewService:
         strategy: Dict,
         brand_context: Dict,
         pre_check_issues: List[str],
+        primary_topic: str = "",
     ) -> str:
         """Build the structured evaluation prompt."""
         seo = strategy.get("seo", {})
@@ -514,12 +557,31 @@ class ReviewService:
             if str(content_type).lower() in ("blog", "article")
             else "Do not keyword-stuff; keep short-form copy natural. Fix any incomplete sentences. "
         )
+        brief = (primary_topic or "").strip() or "(not provided)"
+        geo_hint = ""
+        if re.search(
+            r"\b(india|united\s+states|u\.s\.a?\.?|usa|united\s+kingdom|u\.k\.|uk|"
+            r"canada|australia|uae|singapore)\b",
+            brief,
+            re.I,
+        ):
+            geo_hint = (
+                "- If the brief names a geography/market, score content_quality and "
+                "factual_grounding DOWN when the draft substitutes unrelated-country "
+                "forum or hiring-cost stats instead of sources matching the brief.\n"
+            )
 
         return f"""Evaluate the following {content_type} draft.
 
 IMPORTANT REVIEW RULES:
-- Aim for high, fair scores when content is substantive and on-topic.
-- Scores of 95–100 are appropriate when requirements are met with only minor polish needed.
+- Score relative to the USER BRIEF / PRIMARY TOPIC below — not a different subject.
+- If the draft changed the topic, omitted requested geography/data, or wrote a generic
+  substitute article, content_quality MUST be below 70 and overall should FAIL.
+- If the brief asks for audience-specific stats (e.g. NRI) or a year range (e.g. 2022–2025),
+  score factual_grounding DOWN when the draft only uses off-audience general scam percentages,
+  invents anonymous anecdotes, or cites Facebook posts as primary evidence.
+- Scores of 95–100 ONLY when the draft actually fulfills the user brief with only minor polish needed.
+- Do NOT inflate scores for a well-written article on the WRONG topic.
 - Brand criteria ARE provided below — do NOT claim tone/audience were unspecified.
 - If an H2 OUTLINE block is present, do NOT assume middle body sections are missing —
   truncation is for context-window limits only; judge from intro + outline + closing.
@@ -528,13 +590,16 @@ IMPORTANT REVIEW RULES:
 - Do not invent issues that are not visible in the provided excerpts.
 - Prefer specific actionable feedback over harsh generic deductions.
 - Score factual_grounding 90+ when the draft uses at least 2–3 clear attributed statistics/citations
-  (named source + concrete figure) and avoids absolute uncited industry claims.
+  (named source + concrete figure) relevant to the brief and avoids absolute uncited industry claims.
 - Score cta_effectiveness 90+ only when the closing CTA matches or closely matches: {cta or "(brand CTA)"}
 - Score natural_voice 90+ ONLY when the writing reads like a skilled human wrote it:
   varied sentence length and rhythm, natural transitions, some personality, and NO AI-cliché
   phrases (e.g. "in today's fast-paced world", "moreover", "furthermore", "in conclusion",
   "it's worth noting", "dive in", "game-changer", "unlock the power", "a testament to").
   Deduct heavily for robotic uniform cadence, formulaic scaffolding, or generic filler.
+{geo_hint}
+=== USER BRIEF / PRIMARY TOPIC (must match) ===
+{brief[:500]}
 
 === EVALUATION CRITERIA ===
 BRAND                : {brand_name}
@@ -556,16 +621,16 @@ REQUIRED CTA         : {cta or "none"}
 Score each dimension 0–100:
 
 content_quality (weight 18%)
-  90–100: Exceptional depth, clear structure, compelling narrative
-  70–89 : Good coverage, minor gaps in depth or clarity
-  50–69 : Adequate but thin, lacks examples or data
-  0–49  : Poor — vague, superficial, or off-topic
+  90–100: Exceptional depth, clear structure, compelling narrative — AND on the user brief
+  70–89 : Good coverage of the brief, minor gaps in depth or clarity
+  50–69 : Adequate but thin, or partially off-brief
+  0–49  : Poor — vague, superficial, or off-topic vs the user brief
 
 seo_compliance (weight 22%)
-  90–100: Primary keywords in title, headings, and body; ideal density
+  90–100: Primary keywords in title, headings, and body; ideal density; keywords match the brief
   70–89 : Keywords mostly present; minor optimisation gaps
-  50–69 : Keywords present but not well distributed
-  0–49  : Keywords missing from headings or severely underused
+  50–69 : Keywords present but not well distributed or weakly related to the brief
+  0–49  : Keywords missing from headings or severely underused / wrong-topic keywords
 
 brand_alignment (weight 18%)
   90–100: Tone, audience, and pain points perfectly addressed
@@ -580,10 +645,12 @@ structure (weight 12%)
   0–49  : Poor structure — missing intro or conclusion, no logical progression
 
 factual_grounding (weight 15%)
-  90–100: Claims are supported by research, statistics are attributed, and there are no hallucinations
+  90–100: Claims are supported by research, statistics are attributed, audience/year
+          range match the brief; no Facebook-as-primary evidence; no invented anecdotes
   70–89 : Most claims are supported with minor attribution gaps
-  50–69 : Some unsupported statements or vague statistics
-  0–49  : Major claims are unsupported or potentially hallucinated  
+  50–69 : Some unsupported statements, off-audience stats (e.g. general adult scam %
+          when brief asked for NRI), or vague / wrong-geography statistics
+  0–49  : Major claims are unsupported, hallucinated, or clearly off-brief on data asks
 
 natural_voice (weight 10%) — HOW HUMAN IT READS
   90–100: Reads like a skilled human writer; varied sentence rhythm, natural flow,
@@ -619,9 +686,103 @@ Return ONLY this JSON object:
     "<specific problem not already listed in pre-check issues>",
     "<specific problem>"
   ],
-  "rewrite_instruction": "<If weighted score would be < {PASS_THRESHOLD}: one concise paragraph (maximum 150 words) of actionable revision guidance for the Writer Agent. Lead with the lowest-scoring dimension (especially factual_grounding: add 2–3 attributed research stats/citations when appropriate for this content type; and natural_voice: remove AI-cliché phrases, vary sentence rhythm, write in a natural human voice). {secondary_rewrite_hint}If score >= {PASS_THRESHOLD}: empty string.>"
+  "rewrite_instruction": "<If weighted score would be < {PASS_THRESHOLD}: one concise paragraph (maximum 150 words) of actionable revision guidance for the Writer Agent. Lead with the lowest-scoring dimension (especially factual_grounding: add 2–3 attributed research stats/citations when appropriate for this content type; and natural_voice: remove AI-cliché phrases, vary sentence rhythm, write in a natural human voice). {secondary_rewrite_hint}If off-brief, rewrite to match the USER BRIEF. If score >= {PASS_THRESHOLD}: empty string.>"
 }}
 """
+
+    @staticmethod
+    def _topic_fidelity_issue(brief: str, draft: str) -> str:
+        """
+        Flag when the draft clearly abandoned the user brief (wrong topic / geography).
+        Soft heuristic only — Review LLM still judges depth.
+        """
+        brief_core = (brief or "").split("|")[0].strip().lower()
+        draft_l = (draft or "").lower()
+        if len(brief_core) < 24:
+            return ""
+
+        stop = {
+            "write", "article", "about", "the", "and", "for", "with", "from",
+            "that", "this", "should", "have", "been", "where", "between",
+            "add", "angle", "how", "can", "help", "such", "content", "please",
+        }
+        tokens = [
+            w
+            for w in re.findall(r"[a-z0-9]{4,}", brief_core)
+            if w not in stop
+        ]
+        if len(tokens) < 4:
+            return ""
+        hits = sum(1 for t in tokens[:12] if t in draft_l)
+        if hits < max(2, len(tokens[:12]) // 3):
+            return (
+                "Draft appears off-brief vs the user primary topic — rewrite to match "
+                "the requested subject, geography, and data asks (do not substitute a "
+                "generic screening essay)."
+            )
+        if re.search(r"\bindia\b", brief_core) and not re.search(
+            r"\b(india|indian|delhi|ncr|gurgaon|mumbai|pocso|ncrb)\b",
+            draft_l,
+        ):
+            if re.search(
+                r"\b(usd\s*\d+|reddit|ihss|care\.com|united states|u\.s\.)\b",
+                draft_l,
+            ):
+                return (
+                    "Brief requires India geography/data, but draft leans on "
+                    "unrelated US/forum sources — use India-relevant evidence."
+                )
+        # Generic: brief named US/UK but draft is clearly another market dump
+        if re.search(r"\b(united\s+states|u\.s\.a?\.?|usa)\b", brief_core) and re.search(
+            r"\b(ncrb|pocso|rupees?|₹)\b", draft_l
+        ):
+            if not re.search(r"\b(united\s+states|u\.s\.|usa|american)\b", draft_l):
+                return (
+                    "Brief requires US geography/data, but draft leans on "
+                    "unrelated India-specific sources — match the brief market."
+                )
+
+        # Year-range asks (e.g. 2022 to 2025) must appear or be honestly hedged
+        brief_years = set(re.findall(r"\b(20[12]\d)\b", brief_core))
+        if len(brief_years) >= 2:
+            draft_years = set(re.findall(r"\b(20[12]\d)\b", draft_l))
+            if not (brief_years & draft_years):
+                return (
+                    "Brief asks for a specific year-range of statistics, but the draft "
+                    "lacks those years — add on-range attributed figures or explicitly "
+                    "state that matching year-range data was unavailable."
+                )
+
+        # Audience-specific stats (NRI) must not be replaced only by general-population scam %
+        if re.search(r"\bnri\b|non[-\s]?resident", brief_core):
+            has_nri = bool(re.search(r"\bnri\b|non[-\s]?resident", draft_l))
+            only_general = bool(
+                re.search(
+                    r"\b(75%\s+of\s+adults|three\s+out\s+of\s+four\s+adults|"
+                    r"adults\s+in\s+india\s+have\s+encountered)\b",
+                    draft_l,
+                )
+            )
+            if has_nri and only_general and not re.search(
+                r"\bnri.{0,40}\b(\d|percent|%|crore|cases)\b|"
+                r"\b(\d|percent|%|crore|cases).{0,40}\bnri\b",
+                draft_l,
+            ):
+                return (
+                    "Audience/stats mismatch: brief asks for NRI scam statistics, but the "
+                    "draft mainly uses general India adult scam percentages — replace with "
+                    "NRI/property-specific figures or disclose that NRI-specific series "
+                    "were not found."
+                )
+
+        # Weak social citations as primary evidence
+        if draft_l.count("facebook.com") >= 2:
+            return (
+                "Weak citation pattern: draft repeatedly cites Facebook posts/videos — "
+                "prefer .gov / major news sources for statistics."
+            )
+
+        return ""
 
     @staticmethod
     def _prepare_draft_for_review(draft: str, max_chars: int = 7500) -> str:
@@ -688,15 +849,16 @@ Return ONLY this JSON object:
             return self._fallback_evaluation([])
 
     def _fallback_evaluation(self, pre_check_issues: List[str]) -> Dict:
-        """Return a conservative evaluation when the LLM call fails."""
-        base_score = PASS_THRESHOLD if not pre_check_issues else 60
+        """Return a conservative evaluation when the LLM call fails — never auto-PASS."""
+        base_score = 55 if not pre_check_issues else 45
         return {
             "dimension_scores": {d: base_score for d in DIMENSION_WEIGHTS},
             "feedback": ["Review service fallback — LLM evaluation unavailable."],
-            "issues": pre_check_issues,
+            "issues": list(pre_check_issues)
+            + ["Automated review unavailable; treat score as provisional."],
             "rewrite_instruction": (
-                "Unable to generate specific instructions — please review the content manually."
-                if pre_check_issues else ""
+                "Review the draft against the user brief for topic fidelity, "
+                "requested geography/data, and brand CTA. Fix any off-brief sections."
             ),
         }
 
