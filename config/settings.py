@@ -40,6 +40,10 @@ class Settings(BaseSettings):
 
     NEWS_API_KEY: str | None = None
     NEWS_PAGE_SIZE: int = 5
+    # Google News RSS (no key) — primary news source in ResearchService
+    GOOGLE_NEWS_MAX_RESULTS: int = 8
+    # DuckDuckGo HTML search (no key) — free web complement to Tavily
+    DUCKDUCKGO_MAX_RESULTS: int = 6
 
     YOUTUBE_API_KEY: str | None = None
     # Keep this small — each result may fetch a transcript (with timeout).
