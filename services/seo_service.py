@@ -505,11 +505,15 @@ Rules:
 
     @staticmethod
     def _is_polluted_keyword(keyword: str) -> bool:
-        """Reject keywords produced by '[Brand: …]' leakage."""
+        """Reject brand leakage and ungrammatical SEO fragments."""
         kw = (keyword or "").strip().lower()
         if not kw:
             return True
         if kw == "brand" or kw.startswith("brand "):
+            return True
+        if re.search(r"\bgets?\s+\w+\s+people\b", kw):
+            return True
+        if re.search(r"\b\w+\s+gets?\s+scammed\s+people\b", kw):
             return True
         return False
 
@@ -521,7 +525,20 @@ Rules:
             return False
         if words[0] == "brand":
             return False
+        if SEOService._is_polluted_keyword(keyword):
+            return False
         return True
+
+    @staticmethod
+    def _truncate_at_word(text: str, limit: int) -> str:
+        """Hard length cap without cutting mid-word."""
+        text = (text or "").strip()
+        if len(text) <= limit:
+            return text
+        cut = text[: max(1, limit - 1)].rsplit(" ", 1)[0].rstrip(" ,;:-&|/")
+        if not cut:
+            cut = text[: limit - 1].rstrip(" ,;:-&|/")
+        return cut + "…"
 
     def _seed_candidates(
         self,
@@ -1110,8 +1127,12 @@ Return ONLY this JSON object — no prose, no markdown:
                 .strip()
             )
             data = json.loads(cleaned)
-            meta_title = str(data.get("meta_title", "")).strip()[:60]
-            meta_description = str(data.get("meta_description", "")).strip()[:160]
+            meta_title = self._truncate_at_word(
+                str(data.get("meta_title", "")).strip(), 60
+            )
+            meta_description = self._truncate_at_word(
+                str(data.get("meta_description", "")).strip(), 160
+            )
             slug = str(data.get("slug", "")).strip()[:80] or self._slugify(user_input)
 
             # LLM sometimes returns blanks — never ship empty SEO fields.
@@ -1123,7 +1144,11 @@ Return ONLY this JSON object — no prose, no markdown:
                 meta_description = meta_description or fb_desc
                 slug = slug or fb_slug
 
-            return meta_title[:60], meta_description[:160], slug[:80]
+            return (
+                self._truncate_at_word(meta_title, 60),
+                self._truncate_at_word(meta_description, 160),
+                slug[:80],
+            )
 
         except Exception as exc:
             logger.warning("Meta field generation failed: %s", exc)
@@ -1139,15 +1164,12 @@ Return ONLY this JSON object — no prose, no markdown:
         fallback_title = (
             f"{primary_keywords[0].title()} | {brand_name}"
             if primary_keywords
-            else (user_input[:60] or "Untitled")
+            else (user_input or "Untitled")
         )
         desc_src = user_input.strip() or fallback_title
-        fallback_desc = (
-            (desc_src[:155] + "…") if len(desc_src) > 155 else desc_src
-        )
         return (
-            fallback_title[:60],
-            fallback_desc[:160],
+            self._truncate_at_word(fallback_title, 60),
+            self._truncate_at_word(desc_src, 160),
             self._slugify(user_input or fallback_title),
         )
 
