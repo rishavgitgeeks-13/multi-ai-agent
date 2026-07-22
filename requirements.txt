@@ -10,6 +10,7 @@ streamlit
 tavily-python
 beautifulsoup4
 requests
+ddgs
 langsmith
 pydantic-settings
 youtube-transcript-api
