@@ -4,7 +4,7 @@ their transcripts for downstream AI agents.
 """
 
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
-from typing import List, Dict
+from typing import Dict, List
 
 import requests
 from youtube_transcript_api import YouTubeTranscriptApi
@@ -12,7 +12,7 @@ from youtube_transcript_api import YouTubeTranscriptApi
 from config.settings import settings
 
 # Hard cap so a stalled transcript fetch cannot block the whole pipeline.
-_TRANSCRIPT_TIMEOUT_SEC = 8
+_TRANSCRIPT_TIMEOUT_SEC = 10
 _MAX_TRANSCRIPT_CHARS = 4000
 
 
@@ -27,20 +27,12 @@ class YouTubeSearch:
         """
         Search YouTube and extract transcripts.
 
-        Returns
-        -------
-        [
-            {
-                "title": "...",
-                "channel": "...",
-                "description": "...",
-                "published_at": "...",
-                "video_id": "...",
-                "url": "...",
-                "transcript": "..."
-            }
-        ]
+        Videos without a usable transcript are still returned with
+        transcript="" — ResearchService must skip those for document bodies.
         """
+        if not self.api_key:
+            print("[YouTubeSearch] YOUTUBE_API_KEY not configured")
+            return []
 
         if max_results is None:
             max_results = settings.YOUTUBE_MAX_RESULTS
@@ -55,33 +47,24 @@ class YouTubeSearch:
         }
 
         try:
-
             response = requests.get(
                 self.SEARCH_URL,
                 params=params,
                 timeout=20,
             )
-
             response.raise_for_status()
-
             data = response.json()
-
             videos = []
 
             for item in data.get("items", []):
-
                 snippet = item["snippet"]
-
                 video_id = item["id"]["videoId"]
-
                 transcript = self._get_transcript(video_id)
                 transcript = transcript[:_MAX_TRANSCRIPT_CHARS]
                 print(
-                    f"[YouTubeSearch] "
-                    f"{video_id} "
+                    f"[YouTubeSearch] {video_id} "
                     f"transcript_length={len(transcript)}"
                 )
-
                 videos.append(
                     {
                         "title": snippet.get("title"),
@@ -97,46 +80,60 @@ class YouTubeSearch:
             return videos
 
         except Exception as e:
-
             print(f"[YouTubeSearch] {e}")
-
             return []
 
     def _get_transcript(self, video_id: str) -> str:
-        """
-        Download transcript for a video with a hard timeout.
-
-        Returns empty string if unavailable or timed out.
-        """
+        """Download transcript with a hard timeout. Empty if unavailable."""
         try:
             with ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(self._fetch_transcript, video_id)
                 return future.result(timeout=_TRANSCRIPT_TIMEOUT_SEC)
         except FuturesTimeoutError:
             print(
-                f"[YouTubeTranscript] "
-                f"video_id={video_id} "
+                f"[YouTubeTranscript] video_id={video_id} "
                 f"timed out after {_TRANSCRIPT_TIMEOUT_SEC}s — skipping"
             )
             return ""
         except Exception as exc:
             print(
-                f"[YouTubeTranscript] "
-                f"video_id={video_id} "
+                f"[YouTubeTranscript] video_id={video_id} "
                 f"error={type(exc).__name__}: {exc}"
             )
             return ""
 
     def _fetch_transcript(self, video_id: str) -> str:
-        """Blocking transcript download (run inside a timed worker)."""
+        """
+        Blocking transcript download.
+        Prefer English/Hindi; fall back to any generated track.
+        """
         ytt_api = YouTubeTranscriptApi()
 
-        try:
-            transcript = ytt_api.fetch(
-                video_id,
-                languages=["en", "hi"],
-            )
-        except Exception:
-            transcript = ytt_api.fetch(video_id)
+        # Preferred language order
+        for langs in (["en", "en-US", "en-GB", "hi"], None):
+            try:
+                if langs:
+                    transcript = ytt_api.fetch(video_id, languages=langs)
+                else:
+                    transcript = ytt_api.fetch(video_id)
+                text = " ".join(segment.text for segment in transcript).strip()
+                if text:
+                    return text
+            except Exception:
+                continue
 
-        return " ".join(segment.text for segment in transcript)
+        # Last resort: list tracks and take the first fetchable one
+        try:
+            listing = ytt_api.list(video_id)
+            for track in listing:
+                try:
+                    fetched = track.fetch()
+                    text = " ".join(segment.text for segment in fetched).strip()
+                    if text:
+                        return text
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        return ""
