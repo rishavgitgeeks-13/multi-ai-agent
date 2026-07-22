@@ -104,6 +104,8 @@ def review_node(state: ContentState) -> ContentState:
         strategy=strategy,
         brand_context=brand_context,
         revision_count=revision_count,
+        primary_topic=state.get("primary_topic") or "",
+        user_input=state.get("user_input") or "",
     )
 
     # Word-count adherence when user requested a target
