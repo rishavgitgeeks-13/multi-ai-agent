@@ -161,7 +161,13 @@ AWARENESS-FIRST PACING (mandatory — write an awareness piece, not a sales broc
         return (
             "- When citing RESEARCH STATS, include source name plus year and/or scope "
             "(geography, sample, report name) when those details appear in the snippet. "
-            "Do not invent missing year/scope; if absent, attribute what is available and avoid overclaiming."
+            "Do not invent missing year/scope; if absent, attribute what is available and avoid overclaiming.\n"
+            "- If the PRIMARY TOPIC LOCK asks for a specific audience (e.g. NRI) or year range "
+            "(e.g. 2022–2025), ONLY use stats that match that audience/range. "
+            "Do NOT substitute general 'adults in India' scam percentages for NRI/property stats. "
+            "If matching figures are missing from RESEARCH STATS, say so honestly in one sentence "
+            "and proceed with prevention guidance — do not invent or stretch off-audience numbers.\n"
+            "- Prefer .gov / major news citations over Facebook posts, social videos, or thin blogs."
         )
 
     # Meta / workflow phrases that must never be pasted into published copy.
@@ -177,6 +183,17 @@ AWARENESS-FIRST PACING (mandatory — write an awareness piece, not a sales broc
         re.I,
     )
 
+    # Ungrammatical SEO fragments that must not be force-inserted into prose.
+    _AWKWARD_KEYWORD_RE = re.compile(
+        r"("
+        r"\b\w+\s+gets?\s+scammed\s+people\b|"
+        r"\bhow\s+\w+\s+gets?\s+scammed\s+by\s+people\b|"
+        r"\bscammed\s+people\b|"
+        r"\bgets?\s+scammed\s+in\b"
+        r")",
+        re.I,
+    )
+
     @classmethod
     def _is_leaky_keyword(cls, keyword: str) -> bool:
         """True when a 'keyword' looks like prompt/meta text, not a searchable phrase."""
@@ -188,6 +205,11 @@ AWARENESS-FIRST PACING (mandatory — write an awareness piece, not a sales broc
         if len(words) > 8:
             return True
         if cls._LEAKY_KEYWORD_RE.search(kw):
+            return True
+        if cls._AWKWARD_KEYWORD_RE.search(kw):
+            return True
+        # Broken grammar: "X gets Y people" style fragments
+        if re.search(r"\bgets?\s+\w+\s+people\b", kw, re.I):
             return True
         # Platform label as the start of a multi-word "keyword" (e.g. "linkedin announcing…")
         if len(words) >= 2 and re.match(
@@ -240,6 +262,8 @@ AWARENESS-FIRST PACING (mandatory — write an awareness piece, not a sales broc
             "SEO requirement boilerplate, or campaign-type labels.\n"
             "- Keywords are topics to cover naturally — do not insert raw keyword strings "
             "as awkward mid-sentence clauses or run-on SEO phrases.\n"
+            "- Never force ungrammatical fragments like 'nri gets scammed people' into prose; "
+            "rewrite as natural English (e.g. 'how NRIs get scammed').\n"
             "- If a keyword reads like an instruction or channel brief, ignore it."
         )
 
@@ -253,7 +277,13 @@ AWARENESS-FIRST PACING (mandatory — write an awareness piece, not a sales broc
             "- Do NOT invent statistics, report titles, or attributed figures "
             "(McKinsey, GSMA, Ericsson, etc.). Use only numbers present in RESEARCH STATS / "
             "CITATIONS; if none are available, write without numeric claims.\n"
-            "- Prefer hedged qualitative language over unsupported precision."
+            "- Do NOT invent anonymised anecdotes or \"real-world examples\" "
+            "(e.g. 'an NRI from Dubai…') unless that exact case appears in RESEARCH STATS / "
+            "CITATIONS. Prefer red-flag patterns and attributed reporting instead.\n"
+            "- Prefer hedged qualitative language over unsupported precision.\n"
+            f"- For {brand} capability claims, stick to pain-point solutions stated in brand "
+            "inputs / CTA — do not invent tech (e.g. blockchain, tamper-proof registries) "
+            "unless research or brand inputs say so."
         )
 
     # ------------------------------------------------------------------
@@ -849,15 +879,21 @@ Content rules:
 {self._no_prompt_leak_rules()}
 {self._grounding_rules(outline.brand_name)}
 - Stay strictly on the PRIMARY TOPIC LOCK — never invert victims/roles or change the subject
+- Follow geography from the PRIMARY TOPIC LOCK / user brief only (India, US, UK, etc.);
+  do not invent a market from the brand, and do not fill with unrelated-country forum stats
+- When the user asked for numbers/cases/state-wise data, prioritize those facts from RESEARCH STATS;
+  if research lacks exact figures for the requested audience/years, say so honestly and use the best
+  attributed on-brief sources — never invent counts and never pad with off-audience general scam %
 - Write a hook-driven introduction (100–150 words, no heading under the H1) unless target length is under 400 words — then keep intro proportional
 - Cover every outline section as `##` headings (scale section length to hit ~{target_words} words total)
 - Complete every sentence — never stop mid-word or mid-sentence
 - End with `## Conclusion` that recaps and closes with the exact CTA: {outline.cta}
 - Prefer CTA wording like "Book an AI Discovery Call" style specificity — do not use vague "reach out today"
-- When RESEARCH STATS lists any items and target length >= 400, embed at least 3 attributed statistics in the article body
+- When RESEARCH STATS lists on-brief items and target length >= 400, embed up to 3 attributed statistics
   (intro or early body, one mid-article, one in proof/closing). Format: "According to <Source> (Year if available): <figure>…"
+  Do NOT repeat the same statistic three times. Do NOT cite Facebook posts/videos as primary evidence.
 {self._stat_context_rules()}
-- When a proof / case-study / real-world section appears in the outline, ground it with research stats or named citations above — do not use brand name alone as proof
+- When a proof / case-study / real-world section appears in the outline, ground it with research stats or named citations above — do not use brand name alone as proof; do not invent anonymous case stories
 - Never invent percentages, benchmarks, financial figures, organisation names, or report titles
 - Do not state absolute industry claims (e.g. "most startups fail because…") unless that exact claim appears in RESEARCH STATS or CITATIONS AVAILABLE; otherwise hedge or omit
 - Write money amounts as "USD 500" or "USD 50,000" — never use the $ character (breaks Markdown renderers)
@@ -999,13 +1035,17 @@ CITATIONS:
 {chr(10).join(f"- {c}" for c in research_ctx.get("citations", [])[:6]) or "none"}
 
 Required edits:
-1. Ensure at least 3 clearly attributed statistics appear (intro, mid-body or proof, near close).
+1. Prefer on-brief attributed statistics from RESEARCH STATS (audience + year range if the brief asks).
+   Embed up to 3 distinct figures — do NOT repeat the same stat, do NOT cite Facebook as primary evidence,
+   and do NOT invent numbers to hit a quota. If on-brief stats are thin, keep prevention guidance honest.
    Format: "According to <Source> (Year): <figure>…"
 {self._stat_context_rules()}
 2. If listed, weave these secondary keywords naturally into intro and/or conclusion: {secondary_line}
-3. Do not invent figures, organisations, or years.
-4. Do not use the $ character — write USD amounts.
-5. Keep structure/headings; return the FULL revised Markdown only.
+   Skip ungrammatical fragments (e.g. "nri gets scammed people"); use natural English instead.
+3. Remove invented anonymous anecdotes / unsourced "real-world examples".
+4. Do not invent figures, organisations, or years.
+5. Do not use the $ character — write USD amounts.
+6. Keep structure/headings; return the FULL revised Markdown only.
 {awareness_line}
 DRAFT:
 {draft[:12000]}
