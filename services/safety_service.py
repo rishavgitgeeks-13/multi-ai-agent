@@ -32,10 +32,11 @@ _VIOLATION_LOG = _LOG_DIR / "safety_violations.jsonl"
 
 REFUSAL_MESSAGE = (
     "We cannot create content on this topic. "
-    "Requests involving sexual violence, child abuse, crime how-tos "
+    "Requests involving sexual-violence how-tos, child exploitation, crime how-tos "
     "(fraud, scams, theft, hacking for harm), hate or discrimination, "
     "or religion content that may inflame social conflict are not allowed. "
-    "Educational awareness topics are allowed — for example phishing protection, "
+    "Educational awareness and statistics topics are allowed — for example "
+    "crime/case statistics for societal education, phishing protection, "
     "how trusted nanny/childcare agencies screen differently, NRI fraud awareness, "
     "or balanced AI-market / bubble education. "
     "Please submit a different, appropriate topic."
@@ -73,6 +74,18 @@ _DEFENSIVE_ALLOW_PATTERNS: List[re.Pattern[str]] = [
         r"\b(after|following)\s+(recent\s+)?(childcare|nanny|caregiver).{0,50}\b"
         r"(safety|incident|concern|news|trend)\b",
         r"\b(childcare|nanny)\s+(safety|trust)\s+(awareness|tips|guide|checklist)\b",
+        # Prevention / awareness articles that mention abuse/incidents + how to avoid
+        # (stats OK; graphic exploitation still hard-blocked when no prevention framing)
+        r"\b(nanny|nannies|childcare|caregiver|babysitter|kinvo)\b[\s\S]{0,400}\b"
+        r"(abus\w*|assault|harm|incident|cases?)\b[\s\S]{0,400}\b"
+        r"(avoid|prevent|prevention|protect|protection|safety|screen|vet|awareness|"
+        r"help\s+avoid|red\s*flags|how\s+.+\s+help)\b",
+        r"\b(avoid|prevent|prevention|protect|protection|safety|awareness|screen|vet|"
+        r"help\s+avoid|red\s*flags)\b[\s\S]{0,400}\b"
+        r"(nanny|nannies|childcare|caregiver|babysitter|kinvo)\b[\s\S]{0,200}\b"
+        r"(abus\w*|assault|harm|incident|cases?)\b",
+        r"\b(nanny|nannies|childcare|caregiver|babysitter|kinvo)\b[\s\S]{0,500}\b"
+        r"(help\s+avoid|prevent|prevention|protect|protection|awareness|safety)\b",
         # NRI fraud awareness (not scam how-to)
         r"\b(nri|nris|non[-\s]?resident\s+indians?)\b.{0,80}\b"
         r"(scam|fraud|aware|awareness|protect|protection|avoid|spot|safe|safety)\b",
@@ -87,14 +100,35 @@ _DEFENSIVE_ALLOW_PATTERNS: List[re.Pattern[str]] = [
     ]
 ]
 
+# Geography is detected from the USER PROMPT only — never forced by brand.
+_GEO_HINT_RE = re.compile(
+    r"\b("
+    r"india|indian|delhi|ncr|gurgaon|gurugram|mumbai|bangalore|bengaluru|"
+    r"hyderabad|chennai|kolkata|pune|noida|pocso|ncrb|"
+    r"united\s+states|u\.s\.a\.?|u\.s\.|usa|america|american|"
+    r"united\s+kingdom|u\.k\.|uk|britain|british|"
+    r"canada|canadian|australia|australian|uae|dubai|singapore|"
+    r"germany|german|france|french|japan|japanese"
+    r")\b",
+    re.I,
+)
+
+# Never allow-bypass these (CSAM / child-sex how-tos).
+_NEVER_ALLOW_RE = re.compile(
+    r"\b(csam|pedophil|paedophil|child\s*porn|underage\s*sex|minor\s*sex|"
+    r"how\s+to\s+.{0,40}\b(rape|molest|abuse)\s+(a\s+)?(child|kid|infant|baby|minor))\b",
+    re.I,
+)
+
 _HARD_BLOCK_PATTERNS: List[Tuple[str, re.Pattern[str]]] = [
     (
         "child_exploitation",
         re.compile(
-            r"\b(child\s*(sexual\s*)?(abuse|assault|porn|pornography|exploitat)|"
+            r"\b("
             r"csam|underage\s*sex|minor\s*sex|pedophil|paedophil|"
-            r"nanny\s+.{0,40}\b(abuse|assault|molest|rape).{0,40}\b(child|kid|infant|baby)|"
-            r"(abuse|assault|molest|rape).{0,40}\b(child|kid|infant|baby|minor))\b",
+            r"child\s*(sexual\s*)?(porn|pornography|exploitat)|"
+            r"how\s+to\s+.{0,40}\b(abuse|assault|molest|rape)\s+(a\s+)?(child|kid|infant|baby|minor)\b"
+            r")",
             re.I,
         ),
     ),
@@ -112,32 +146,39 @@ _HARD_BLOCK_PATTERNS: List[Tuple[str, re.Pattern[str]]] = [
         ),
     ),
     (
+        # Instructional / erotic depiction — NOT bare "rape statistics" / awareness
         "sexual_violence",
         re.compile(
             r"\b("
-            r"rape|raping|rapist|"
-            r"sexual\s*assault\w*|sexually\s*assault\w*|"
-            r"sexual\s*abuse\w*|sexually\s*abuse\w*|"
-            r"molest\w*|molestation|"
-            r"non[-\s]?consensual\s*sex|force[d]?\s*sex"
-            r")\b",
+            r"how\s+to\s+(rape|molest|sexually\s+(assault|abuse)|force(?:d)?\s+sex)|"
+            r"how\s+to\s+(have|get)\s+sex\b|"
+            r"how\s+(an?\s+)?(owner|employer|boss).{0,40}\bsexually\s+(harass|assault|abuse)|"
+            r"(write|create|generate|describe).{0,40}\b(rape|sexual\s*assault)\s+(scene|story|erotica)|"
+            r"(guide|tutorial|tips)\s+(to|on|for)\s+(rape|molest|having\s+sex)|"
+            r"rape\s+(someone|her|him|a\s+(woman|girl|child|kid))\b|"
+            r"non[-\s]?consensual\s*sex\s+(guide|howto|how\s+to)|"
+            r"force[d]?\s*sex\s+(guide|howto|how\s+to)"
+            r")",
             re.I,
         ),
     ),
     (
         "violent_crime_howto",
         re.compile(
-            r"\b(how\s+to\s+)?(murder|kill\s+someone|torture|assassinate|"
-            r"make\s+a\s+bomb|build\s+a\s+bomb|school\s+shooting)\b",
+            r"\b("
+            r"how\s+to\s+(murder|kill\s+someone|torture|assassinate)|"
+            r"how\s+to\s+(make|build)\s+a\s+bomb|"
+            r"school\s+shooting\s+(guide|howto|how\s+to)"
+            r")",
             re.I,
         ),
     ),
     (
         "fraud_scam_howto",
         re.compile(
-            # Block scam/fraud *how-tos* only — not educational mentions of fraud/phishing.
             r"\b("
             r"how\s+to\s+.{0,40}\b(commit\s+)?(fraud|scam|phish|defraud)\b|"
+            r"how\s+to\s+(scam|con|defraud)\s+(people|someone|victims?)|"
             r"how\s+to\s+.{0,40}\b(run\s+a\s+scam|phishing\s+attack|identity\s+theft)\b|"
             r"run\s+a\s+scam\b|"
             r"(create|make)\s+fake\s+(kyc|invoice|cheque|check)\b|"
@@ -161,9 +202,6 @@ _HARD_BLOCK_PATTERNS: List[Tuple[str, re.Pattern[str]]] = [
     (
         "hacking_harm_howto",
         re.compile(
-            # Block offensive hacking *how-tos* only.
-            # Bare words like ransomware / phishing / ddos are normal in cybersecurity
-            # startup and awareness articles and must NOT block drafts.
             r"\b("
             r"how\s+to\s+hack\b|"
             r"hack\s+into\s+(an?\s+)?(account|bank|wifi|password|system|network|email)\b|"
@@ -267,16 +305,42 @@ class SafetyService:
                 constraints=constraints,
             )
 
-        if self._is_defensive_allow(text):
-            locked_topic = self._lock_awareness_topic(text, primary_topic)
+        # Absolute never-allow (CSAM / child-sex how-tos)
+        if _NEVER_ALLOW_RE.search(text):
+            decision = self._result(
+                allowed=False,
+                category="child_exploitation",
+                reason="Matched never-allow child exploitation / CSAM policy",
+                primary_topic=primary_topic,
+                constraints=constraints,
+            )
+            self.log_violation(
+                user_input=text,
+                decision=decision,
+                request_id=request_id,
+                session_id=session_id,
+                brand=brand,
+                content_type=content_type,
+                source=source,
+                stage="request",
+            )
+            return decision
+
+        # Stats / awareness / prevention — allow and keep the user's real topic
+        if self._is_educational_or_awareness_intent(text) or self._is_defensive_allow(
+            text
+        ):
+            framed_topic = self._frame_safe_primary_topic(
+                text, primary_topic, brand=brand
+            )
             return self._result(
                 allowed=True,
                 category="defensive_awareness",
                 reason=(
-                    "Educational / awareness topic allowed "
-                    "(safe framing locked for downstream agents)"
+                    "Educational / awareness / stats topic allowed "
+                    "(primary user topic preserved; geography follows user prompt)"
                 ),
-                primary_topic=locked_topic,
+                primary_topic=framed_topic,
                 constraints=constraints,
                 defensive_allow=True,
             )
@@ -305,15 +369,30 @@ class SafetyService:
         llm_decision = self._classify_with_llm(text)
         if llm_decision is not None:
             allowed = bool(llm_decision.get("allowed", True))
-            category = str(
-                llm_decision.get("category")
-                or ("safe" if allowed else "policy_violation")
-            )
-            reason = str(llm_decision.get("reason") or "")
-            if llm_decision.get("primary_topic"):
-                primary_topic = str(llm_decision["primary_topic"]).strip() or primary_topic
+            # Prefer educational allow when classifier is unsure but intent is stats/awareness
+            if (
+                not allowed
+                and self._is_educational_or_awareness_intent(text)
+                and not _NEVER_ALLOW_RE.search(text)
+            ):
+                allowed = True
+                category = "defensive_awareness"
+                reason = "Reclassified as educational/awareness/stats intent"
+            else:
+                category = str(
+                    llm_decision.get("category")
+                    or ("safe" if allowed else "policy_violation")
+                )
+                reason = str(llm_decision.get("reason") or "")
+            if llm_decision.get("primary_topic") and allowed:
+                # Prefer user-derived topic; only use LLM topic if it did not diverge
+                llm_topic = str(llm_decision["primary_topic"]).strip()
+                if llm_topic and not self._topics_diverged(primary_topic, llm_topic):
+                    primary_topic = llm_topic
             if allowed:
-                primary_topic = self._lock_awareness_topic(text, primary_topic)
+                primary_topic = self._frame_safe_primary_topic(
+                    text, primary_topic, brand=brand
+                )
             decision = self._result(
                 allowed=allowed,
                 category=category,
@@ -325,7 +404,8 @@ class SafetyService:
                 ),
                 primary_topic=primary_topic,
                 constraints=constraints,
-                defensive_allow=allowed and self._is_defensive_allow(text),
+                defensive_allow=allowed
+                and self._is_educational_or_awareness_intent(text),
             )
             if not allowed:
                 self.log_violation(
@@ -344,7 +424,9 @@ class SafetyService:
             allowed=True,
             category="safe",
             reason="No policy violation detected",
-            primary_topic=primary_topic,
+            primary_topic=self._frame_safe_primary_topic(
+                text, primary_topic, brand=brand
+            ),
             constraints=constraints,
         )
 
@@ -514,44 +596,176 @@ class SafetyService:
     def _is_defensive_allow(text: str) -> bool:
         return any(p.search(text) for p in _DEFENSIVE_ALLOW_PATTERNS)
 
+    @classmethod
+    def _is_educational_or_awareness_intent(cls, text: str) -> bool:
+        """
+        Allow stats / societal education / prevention framing.
+        Does NOT allow clear harmful how-tos (those stay hard-blocked).
+        """
+        t = text or ""
+        if not t.strip() or _NEVER_ALLOW_RE.search(t):
+            return False
+        # Clear instructional harm stays blocked even if "stats" appears nearby.
+        howto_hit, _ = cls._match_hard_block(t)
+        if howto_hit in {
+            "sexual_violence",
+            "violent_crime_howto",
+            "fraud_scam_howto",
+            "theft_howto",
+            "hacking_harm_howto",
+            "child_exploitation",
+            "graphic_child_harm",
+            "self_harm",
+        }:
+            return False
+
+        has_edu = bool(
+            re.search(
+                r"\b("
+                r"stats?|statistics|statistical|data|figures?|numbers?|"
+                r"cases?|incidents?|reports?|reporting|prevalence|rate|"
+                r"awareness|societal|education(al)?|public\s+health|"
+                r"trends?|year[-\s]?wise|state[-\s]?wise|overview|"
+                r"what\s+are\s+the\s+(stats|statistics|figures|numbers)"
+                r")\b",
+                t,
+                re.I,
+            )
+        )
+        has_prevention = cls._has_prevention_intent(t)
+        has_sensitive = bool(_SENSITIVE_TERMS.search(t)) or cls._is_childcare_sensitive(
+            t
+        )
+        # Stats/awareness about sensitive societal topics, or prevention + sensitive.
+        if has_edu and (has_sensitive or has_prevention):
+            return True
+        if has_prevention and has_sensitive:
+            return True
+        return False
+
+    @staticmethod
+    def _has_prevention_intent(text: str) -> bool:
+        """Broader prevention signal used for awareness / educational allows."""
+        t = text or ""
+        return bool(
+            re.search(
+                r"\b(prevent|prevention|avoid|protect|protection|awareness|safety|"
+                r"screen|screening|vet|vetting|red\s*flags|checklist|"
+                r"help\s+avoid|how\s+.+\s+help|trusted\s+agenc)\b",
+                t,
+                re.I,
+            )
+        )
+
+    @staticmethod
+    def _strip_brand_prefix(text: str) -> str:
+        return re.sub(
+            r"^\[\s*brand\s*:[^\]]+\]\s*",
+            "",
+            (text or "").strip(),
+            flags=re.I,
+        ).strip()
+
+    @staticmethod
+    def _user_geography_tokens(text: str) -> List[str]:
+        """Geography tokens from the user prompt only (never inferred from brand)."""
+        found = [m.group(0) for m in _GEO_HINT_RE.finditer(text or "")]
+        # Preserve order, de-dupe case-insensitively
+        seen = set()
+        out: List[str] = []
+        for tok in found:
+            key = tok.lower()
+            if key not in seen:
+                seen.add(key)
+                out.append(tok)
+        return out[:6]
+
+    @staticmethod
+    def _is_childcare_sensitive(text: str) -> bool:
+        t = (text or "").lower()
+        return bool(
+            re.search(
+                r"\b(nanny|nannies|childcare|caregiver|babysitter)\b",
+                t,
+            )
+            and re.search(
+                r"\b(abus\w*|assault|molest|rape|harm|incident|exploit)\b",
+                t,
+            )
+        )
+
+    @classmethod
+    def _frame_safe_primary_topic(
+        cls,
+        text: str,
+        fallback: str,
+        brand: Optional[str] = None,
+    ) -> str:
+        """
+        Keep the user's real topic (do NOT replace with a generic screening essay).
+        Append soft framing so Writer/Research stay on-brief without graphic junk.
+        Geography follows the user prompt only — brand never forces a market.
+        """
+        del brand  # Brand tone/CTA live in brands.yaml; do not force geography.
+        base = cls._strip_brand_prefix(fallback or text or "")
+        if not base:
+            base = cls._strip_brand_prefix(text or "")[:300]
+        # Prefer the cleaned user ask as the core topic (not a rewritten subject).
+        user_core = cls._strip_brand_prefix(text or "")
+        if user_core and len(user_core) >= 20:
+            # If LLM already rewrote away from the user ask, restore user core.
+            if cls._topics_diverged(user_core, base):
+                base = user_core[:400]
+
+        extras: List[str] = []
+        geo_tokens = cls._user_geography_tokens(text) or cls._user_geography_tokens(
+            base
+        )
+        if geo_tokens:
+            geo_list = ", ".join(geo_tokens)
+            extras.append(
+                f"Geography: follow the user prompt ({geo_list}) — use matching "
+                f"market data and sources; do not substitute unrelated countries."
+            )
+
+        if cls._is_childcare_sensitive(text) or cls._is_childcare_sensitive(base):
+            extras.append(
+                "Safety framing: prevention/awareness for parents — high-level "
+                "statistics and red flags only; no graphic incident detail, "
+                "no sensational crime storytelling, no sexual content."
+            )
+
+        if extras:
+            return f"{base[:420].rstrip()} | {' '.join(extras)}"[:700]
+        return base[:500]
+
+    @staticmethod
+    def _topics_diverged(user_topic: str, candidate: str) -> bool:
+        """True when candidate dropped core tokens from the user ask (junk rewrite)."""
+        def tokens(s: str) -> set:
+            stop = {
+                "write", "article", "about", "the", "and", "for", "with", "from",
+                "that", "this", "should", "have", "been", "where", "between",
+                "add", "an", "angle", "on", "how", "can", "help", "such",
+            }
+            return {
+                w
+                for w in re.findall(r"[a-z0-9]{3,}", (s or "").lower())
+                if w not in stop
+            }
+
+        u = tokens(user_topic)
+        c = tokens(candidate)
+        if not u:
+            return False
+        overlap = len(u & c) / max(1, len(u))
+        # If the candidate kept <35% of user tokens, it likely replaced the topic.
+        return overlap < 0.35
+
     @staticmethod
     def _lock_awareness_topic(text: str, fallback: str) -> str:
-        """
-        Rewrite awareness prompts into a safe primary topic so Writer/Research
-        do not recreate graphic incidents — only education / trust / protection.
-        """
-        t = (text or "").lower()
-        if re.search(
-            r"\b(nanny|nannies|childcare|caregiver|babysitter|agenc(?:y|ies))\b",
-            t,
-        ):
-            return (
-                "How responsible childcare and nanny agencies screen, train, and "
-                "monitor caregivers — and what parents should check so they can "
-                "hire with more trust"
-            )
-        if re.search(r"\b(nri|nris|non[-\s]?resident)\b", t):
-            return (
-                "How NRIs can spot and avoid local fraud and scams — practical "
-                "awareness and protection tips"
-            )
-        if re.search(r"\b(ai|artificial\s+intelligence)\s+bubble\b", t) or (
-            re.search(r"\b(ai|artificial\s+intelligence)\b", t)
-            and re.search(r"\b(bubble|burst|short[-\s]?term|long[-\s]?term)\b", t)
-        ):
-            return (
-                "Balanced advice on the AI market: short-term bubble risk versus "
-                "long-term AI technology investment opportunities"
-            )
-        if re.search(
-            r"\b(phish|phishing|scam|fraud|hack|cyber|ransomware|malware)\b",
-            t,
-        ):
-            return (
-                "How to protect yourself from online scams, phishing, and cyber "
-                "attacks — practical awareness tips"
-            )
-        return (fallback or text)[:300]
+        """Backward-compatible alias — preserves topic via framing."""
+        return SafetyService._frame_safe_primary_topic(text, fallback)
 
     @staticmethod
     def _match_hard_block(text: str) -> Tuple[str, str]:
@@ -571,6 +785,7 @@ class SafetyService:
             cleaned,
             flags=re.I,
         )
+        cleaned = re.sub(r"^\[\s*brand\s*:[^\]]+\]\s*", "", cleaned, flags=re.I)
         cleaned = re.sub(r"\s+", " ", cleaned).strip(" .,;:-")
         return cleaned[:300] if cleaned else text[:300]
 
@@ -608,21 +823,23 @@ class SafetyService:
             "You are a strict content-policy classifier for a brand content platform. "
             "Return ONLY valid JSON with keys: "
             "allowed (bool), category (string), reason (string), primary_topic (string).\n"
-            "BLOCK (allowed=false) when the user wants content that: "
-            "depicts or instructs sexual violence, rape, child abuse/exploitation; "
-            "graphic retelling of crimes against children for engagement; "
-            "how-to for fraud, scams, theft, hacking for harm; "
-            "hate/discrimination by caste, gender, race, region, religion; "
-            "religion content that insults faiths or inflames communal conflict; "
-            "self-harm instructions; graphic glorification of crime.\n"
-            "ALLOW (allowed=true) defensive/educational awareness content such as: "
-            "phishing/scam/cyber protection; "
-            "how trusted nanny/childcare agencies screen, train, and monitor differently "
-            "and parent hiring checklists (without graphic abuse detail); "
-            "NRI fraud awareness and protection; "
-            "balanced AI bubble / short-term vs long-term investor education.\n"
-            "When allowing awareness, primary_topic must be a SAFE educational restatement "
-            "(trust, screening, protection, balanced advice) — never a graphic incident narrative."
+            "Judge INTENT, not bare keywords.\n"
+            "BLOCK (allowed=false) clear harmful how-tos / non-educational asks, including: "
+            "'how to rape', 'how to have sex', 'how to scam people', crime/fraud/theft/hacking "
+            "instructionals, CSAM/child-sex content, graphic child-harm retellings for "
+            "entertainment, hate/discrimination, religion content that inflames conflict, "
+            "self-harm instructions.\n"
+            "ALLOW (allowed=true) educational / awareness / prevention intent, including: "
+            "statistics and societal education (e.g. 'stats of rape cases in India'); "
+            "awareness and prevention articles that cite high-level case data; "
+            "phishing/scam/cyber protection; parent childcare safety / nanny screening / "
+            "red flags; brand prevention angles (e.g. how a verified agency helps avoid "
+            "incidents); NRI fraud awareness; balanced AI bubble education. "
+            "Do not invent geography — keep whatever market the user named "
+            "(India, US, UK, etc.). Never assume a market from the brand alone.\n"
+            "CRITICAL for primary_topic when allowed: preserve the user's actual request "
+            "(geography, years, data asks, brand angle). Do NOT replace it with a generic "
+            "screening-only essay. You may append a short safety note, but keep the core ask."
         )
         user = f"Classify this content request:\n\n{text}"
 
