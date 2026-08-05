@@ -225,13 +225,29 @@ class ContentWorkflow:
         try:
             from memory.conversation_memory import ConversationMemory
             mem = ConversationMemory(session_id=session_id)
-            mem.add_user_message(user_input)
+            mem.add_user_message(user_input, metadata={"workflow": "content"})
+            draft = ""
+            final = state.get("final_output") or {}
+            content = final.get("content") or {}
+            if isinstance(content, dict):
+                draft = str(content.get("markdown") or "")
+            hashtags = final.get("hashtags") or state.get("hashtags") or []
             summary = (
                 f"[ContentWorkflow] status={state.get('workflow_status')} | "
                 f"score={state.get('review', {}).get('score', 'N/A')} | "
-                f"words={state.get('metadata', {}).get('word_count', 'N/A')}"
+                f"words={state.get('metadata', {}).get('word_count', 'N/A')}\n\n"
+                f"{draft[:2500]}"
             )
-            mem.add_assistant_message(summary)
+            if hashtags:
+                summary += "\n\nHashtags: " + " ".join(str(h) for h in hashtags)
+            mem.add_assistant_message(
+                summary,
+                metadata={
+                    "workflow": "content",
+                    "score": (state.get("review") or {}).get("score"),
+                    "hashtags": hashtags,
+                },
+            )
             mem.save_workflow_state(state)
         except Exception as exc:
             logger.warning("ConversationMemory save failed (non-fatal): %s", exc)
