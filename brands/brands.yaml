@@ -3,6 +3,7 @@ brands:
   gtib:
     display_name: GTIB / M&A Advisory
     namespace: gtib
+    font: Google Sans Flex Regular
 
     aliases:
       - gtib
@@ -39,6 +40,7 @@ brands:
   kinvo:
     display_name: Kinvo Care
     namespace: kinvo
+    font: Gotham Regular
 
     aliases:
       - kinvo
@@ -73,6 +75,7 @@ brands:
   mpm:
     display_name: MPM NRI Properties
     namespace: mpm
+    font: Open Sans Regular
 
     aliases:
       - mpm
@@ -102,6 +105,7 @@ brands:
   futuristix:
     display_name: Futuristix / Agentic AI
     namespace: futuristix
+    font: Inter Regular
 
     aliases:
       - futuristix
@@ -133,6 +137,7 @@ brands:
   gcb:
     display_name: GCB Services
     namespace: gcb
+    font: Google Sans Flex Regular
 
     aliases:
       - gcb
