@@ -37,6 +37,8 @@ import re
 import unicodedata
 from typing import Dict, List
 
+from services.text_cleanup import strip_all_dashes
+
 logger = logging.getLogger(__name__)
 
 
@@ -87,6 +89,9 @@ class Formatter:
         # Strip trailing whitespace per line
         lines = [line.rstrip() for line in draft.splitlines()]
         text = "\n".join(lines)
+
+        # Brand guideline: no dashes of any kind in published content
+        text = strip_all_dashes(text)
 
         # Collapse excessive blank lines
         text = re.sub(r"\n{3,}", "\n\n", text)
