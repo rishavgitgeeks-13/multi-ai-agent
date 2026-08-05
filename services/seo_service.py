@@ -482,6 +482,7 @@ Rules:
         "from", "by", "about", "into", "our", "your", "my", "we", "you",
         "write", "generate", "create", "make", "blog", "article", "post",
         "please", "need", "want",
+        "have", "has", "had", "been", "done", "many", "much", "between",
         # Workflow-tag pollution — never treat as search terms
         "brand",
     })
@@ -515,7 +516,92 @@ Rules:
             return True
         if re.search(r"\b\w+\s+gets?\s+scammed\s+people\b", kw):
             return True
+        # Scrambled order like "cases india nannies" / measure-first dumps
+        if re.search(
+            r"^(cases|numbers|stats|statistics|data)\s+",
+            kw,
+        ):
+            return True
+        if re.search(r"\b(have|has|been|done|get|gets)\s*$", kw):
+            return True
         return False
+
+    @staticmethod
+    def _natural_topic_phrases(tokens: List[str]) -> List[str]:
+        """
+        Rebuild searchable phrases in natural English order
+        (topic → cases/stats → geography), not raw query token order.
+        """
+        if not tokens:
+            return []
+        geo_set = {
+            "india", "indian", "delhi", "mumbai", "bangalore", "bengaluru",
+            "usa", "uk", "canada", "australia",
+        }
+        topic_set = {
+            "nanny", "nannies", "daycare", "childcare", "caregiver", "babysitter",
+            "abuse", "assault", "scam", "scams", "fraud", "property", "nri",
+            "screening", "safety", "prevention", "creche",
+        }
+        measure_set = {
+            "cases", "case", "statistics", "stats", "numbers", "data", "trends",
+        }
+        filler = {"have", "has", "been", "done", "get", "gets", "how", "many", "what"}
+
+        topic_raw = [t for t in tokens if t in topic_set]
+        # Prefer people/topic nouns before abstract harm words
+        noun_first = {
+            "nanny", "nannies", "daycare", "childcare", "caregiver", "babysitter",
+            "creche", "nri", "property",
+        }
+        topic = [t for t in topic_raw if t in noun_first] + [
+            t for t in topic_raw if t not in noun_first
+        ]
+        geo = [t for t in tokens if t in geo_set]
+        measure = [t for t in tokens if t in measure_set]
+        other = [
+            t for t in tokens
+            if t not in topic_set and t not in geo_set
+            and t not in measure_set and t not in filler
+        ]
+
+        phrases: List[str] = []
+        if topic:
+            head = " ".join(topic[:2])
+            if measure:
+                phrases.append(f"{head} {measure[0]}")
+                if geo:
+                    phrases.append(f"{head} {measure[0]} {geo[0]}")
+            elif geo:
+                phrases.append(f"{head} {geo[0]}")
+            else:
+                phrases.append(head)
+            if len(topic) >= 2 and geo:
+                phrases.append(f"{topic[0]} {topic[1]} {geo[0]}")
+            # Explicit high-quality pattern when both nanny + abuse present
+            if any(t.startswith("nann") for t in topic) and "abuse" in topic_raw:
+                nanny = next(t for t in topic if t.startswith("nann"))
+                if geo and measure:
+                    phrases.insert(0, f"{nanny} abuse {measure[0]} {geo[0]}")
+                elif geo:
+                    phrases.insert(0, f"{nanny} abuse {geo[0]}")
+                else:
+                    phrases.insert(0, f"{nanny} abuse")
+        # Fallback: first meaningful tokens without scrambling geo/measure first
+        core = [t for t in tokens if t not in filler][:4]
+        if core and core[0] not in measure_set and core[0] not in geo_set:
+            phrases.append(" ".join(core))
+        if other and topic:
+            phrases.append(f"{topic[0]} {' '.join(other[:2])}".strip())
+        # de-dupe
+        out: List[str] = []
+        seen = set()
+        for p in phrases:
+            p = re.sub(r"\s+", " ", p).strip()
+            if p and p not in seen:
+                seen.add(p)
+                out.append(p)
+        return out[:6]
 
     @staticmethod
     def _is_viable_primary(keyword: str) -> bool:
@@ -571,15 +657,19 @@ Rules:
             seen.add(phrase)
             seeds.append(KeywordCandidate(keyword=phrase, category=category))
 
-        # Core topic phrases as primary seeds
-        if len(tokens) >= 2:
-            _add(" ".join(tokens[: min(4, len(tokens))]), "primary")
+        # Prefer natural English topic phrases over raw token-order dumps
+        natural = self._natural_topic_phrases(tokens)
+        for i, phrase in enumerate(natural):
+            _add(phrase, "primary" if i < 2 else "secondary")
+
+        # Light fallback bigrams only if natural seeding produced nothing usable
+        if not seeds and len(tokens) >= 2:
             _add(f"{tokens[0]} {tokens[1]}", "primary")
-        if len(tokens) >= 3:
-            _add(f"{tokens[0]} {tokens[1]} {tokens[2]}", "primary")
-        if len(tokens) >= 4:
-            # e.g. "ai agents … smb" style abbreviated topic
-            _add(f"{tokens[0]} {tokens[1]} {tokens[-1]}", "secondary")
+        if len(tokens) >= 3 and not any(
+            " ".join(tokens[:3]) == s.keyword for s in seeds
+        ):
+            # Only add raw triple when it is not polluted
+            _add(" ".join(tokens[:3]), "secondary")
 
         for raw in brand_context.get("keyword_direction", []) or []:
             kw = str(raw).strip().lower()
