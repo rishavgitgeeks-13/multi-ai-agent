@@ -44,8 +44,8 @@ if "chat_history" not in st.session_state:
     st.session_state.chat_history = []     # session-wise UI turns
 if "history_loaded" not in st.session_state:
     st.session_state.history_loaded = False
-#API_BASE_URL = "http://54.218.34.106:9000"
-API_BASE_URL = "http://localhost:8000"
+API_BASE_URL = "http://54.218.34.106:9000"
+#API_BASE_URL = "http://localhost:8000"
 
 # Always point at the deployed API (do not let an old empty session value stick).
 st.session_state.api_url = API_BASE_URL
