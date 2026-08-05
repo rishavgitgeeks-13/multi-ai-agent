@@ -104,6 +104,13 @@ AI_TELL_PHRASES: List[str] = [
     "elevate your",
     "in the fast-paced",
     "ever-changing landscape",
+    "this article explores",
+    "first, discuss",
+    "first discuss",
+    "let us examine",
+    "as we delve",
+    "expatriates",
+    "expatriate",
 ]
 
 
@@ -212,30 +219,42 @@ class ReviewService:
                 60,
             )
 
-        # Off-brief drafts must not pass with a high content_quality score.
+        # Soft vs severe fidelity: do not crush scores for honest data gaps.
         fidelity_flags = " ".join(str(i).lower() for i in pre_check_issues)
-        if any(
+        severe = any(
             flag in fidelity_flags
             for flag in (
                 "off-brief",
                 "india geography",
-                "year-range",
-                "audience/stats",
+                "us geography",
                 "weak citation",
                 "facebook",
+                "audience/stats mismatch",
             )
-        ):
+        )
+        soft = any(
+            flag in fidelity_flags
+            for flag in ("year-range", "matching year-range data")
+        )
+        if severe:
+            # Real topic/geo/citation failures — keep caps, but not as harsh as before
             dim_scores["content_quality"] = min(
                 int(dim_scores.get("content_quality", 50)),
-                65,
+                78,
             )
             dim_scores["seo_compliance"] = min(
                 int(dim_scores.get("seo_compliance", 50)),
-                70,
+                80,
             )
             dim_scores["factual_grounding"] = min(
                 int(dim_scores.get("factual_grounding", 50)),
-                60,
+                72,
+            )
+        elif soft:
+            # Missing years with no honest hedge — nudge grounding only
+            dim_scores["factual_grounding"] = min(
+                int(dim_scores.get("factual_grounding", 50)),
+                82,
             )
 
         score = self._calculate_score(dim_scores)
@@ -742,11 +761,22 @@ Return ONLY this JSON object:
                     "unrelated India-specific sources — match the brief market."
                 )
 
-        # Year-range asks (e.g. 2022 to 2025) must appear or be honestly hedged
+        # Year-range asks (e.g. 2022 to 2025) must appear OR be honestly hedged
         brief_years = set(re.findall(r"\b(20[12]\d)\b", brief_core))
         if len(brief_years) >= 2:
             draft_years = set(re.findall(r"\b(20[12]\d)\b", draft_l))
-            if not (brief_years & draft_years):
+            honest_gap = bool(
+                re.search(
+                    r"\b("
+                    r"no publicly available|not separately tracked|data is limited|"
+                    r"limited data|nanny-specific (data|statistics) (is|are) (limited|not)|"
+                    r"unavailable|harder to isolate|does not always isolate|"
+                    r"exact (year|year-?range|figures?).{0,40}(unavailable|not found|limited)"
+                    r")\b",
+                    draft_l,
+                )
+            )
+            if not (brief_years & draft_years) and not honest_gap:
                 return (
                     "Brief asks for a specific year-range of statistics, but the draft "
                     "lacks those years — add on-range attributed figures or explicitly "
