@@ -69,25 +69,27 @@ class BusinessContextService:
                 "social media",
                 "carousel",
                 "instagram",
-                "facebook post",
+                "facebook",
+                "reddit",
+                "comment reply",
+                "social comment",
                 "thread",
             ]
         ):
             platform = "linkedin"
 
-            if any(
-                x in text
-                for x in [
-                    "twitter",
-                    "tweet",
-                    "x post",
-                    "thread",
-                ]
-            ):
+            if any(x in text for x in ["twitter", "tweet", "x post", "thread"]):
                 platform = "x"
-
             elif "carousel" in text:
                 platform = "carousel"
+            elif "instagram" in text:
+                platform = "instagram"
+            elif "facebook" in text:
+                platform = "facebook"
+            elif "reddit" in text:
+                platform = "reddit"
+            elif any(x in text for x in ["comment reply", "social comment", "reply comment"]):
+                platform = "comment"
 
             return {
                 "workflow": "social",
