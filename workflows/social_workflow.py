@@ -68,39 +68,91 @@ _PLATFORM_CONFIG: Dict[str, Dict[str, Any]] = {
     "linkedin": {
         "content_type": "linkedin",
         "platform_label": "linkedin",
-        "word_count": "500–700",
+        "word_count": "500 to 700",
         "instructions": (
             "LINKEDIN FORMAT: "
-            "Start with a powerful single-sentence hook (no hashtags on the first line). "
-            "Use short paragraphs (1–3 lines) separated by blank lines. "
-            "No Markdown ## headings — LinkedIn renders plain text. "
-            "End with 5–10 relevant hashtags on the last line. "
-            "Tone: conversational but authoritative."
+            "Start with a powerful single sentence hook (no hashtags on the first line). "
+            "Use short paragraphs (1 to 3 lines) separated by blank lines. "
+            "No Markdown ## headings. LinkedIn renders plain text. "
+            "End with 5 to 10 relevant hashtags on the last line. "
+            "Tone: conversational but authoritative. "
+            "Never use hyphen or dash characters anywhere in the post."
         ),
     },
     "carousel": {
         "content_type": "carousel",
         "platform_label": "linkedin",
-        "word_count": "700–900",
+        "word_count": "700 to 900",
         "instructions": (
             "CAROUSEL FORMAT: "
-            "Format each slide as '**Slide N: Headline**' followed by 2–3 bullet points. "
+            "Format each slide as '**Slide N: Headline**' followed by 2 to 3 bullet points. "
             "Slide 1 = hook/title slide. Last slide = CTA slide. "
-            "Each slide ≤ 40 words. Strong visual language — each slide must work standalone. "
-            "Total slides: 6–10."
+            "Each slide max 40 words. Strong visual language. Each slide must work standalone. "
+            "Total slides: 6 to 10. Never use hyphen or dash characters."
         ),
     },
     "x": {
-        "content_type": "linkedin",  # Short-form uses the linkedin pipeline
+        "content_type": "linkedin",
         "platform_label": "x",
-        "word_count": "200–350",
+        "word_count": "200 to 350",
         "instructions": (
             "X (TWITTER) FORMAT: "
-            "Write a thread of 4–8 tweets. Number each tweet: '1/', '2/', etc. "
-            "Each tweet ≤ 280 characters including the number prefix. "
-            "First tweet is the hook — must stand alone as a single post. "
-            "Last tweet is the CTA. Max 2–3 hashtags total (last tweet only). "
-            "No Markdown headings."
+            "Write a thread of 4 to 8 tweets. Number each tweet: '1/', '2/', etc. "
+            "Each tweet max 280 characters including the number prefix. "
+            "First tweet is the hook and must stand alone as a single post. "
+            "Last tweet is the CTA. Max 2 to 3 hashtags total (last tweet only). "
+            "No Markdown headings. Never use hyphen or dash characters."
+        ),
+    },
+    "instagram": {
+        "content_type": "linkedin",
+        "platform_label": "instagram",
+        "word_count": "150 to 300",
+        "instructions": (
+            "INSTAGRAM CAPTION FORMAT: "
+            "Start with a scroll stopping hook in the first line. "
+            "Use short paragraphs and line breaks for mobile reading. "
+            "Include a clear CTA near the end. "
+            "End with 10 to 20 relevant hashtags on the last lines. "
+            "No Markdown ## headings. Never use hyphen or dash characters."
+        ),
+    },
+    "facebook": {
+        "content_type": "linkedin",
+        "platform_label": "facebook",
+        "word_count": "200 to 400",
+        "instructions": (
+            "FACEBOOK POST FORMAT: "
+            "Conversational hook first. Short paragraphs. "
+            "Encourage comments with a question near the end. "
+            "End with 3 to 8 relevant hashtags. "
+            "No Markdown ## headings. Never use hyphen or dash characters."
+        ),
+    },
+    "reddit": {
+        "content_type": "linkedin",
+        "platform_label": "reddit",
+        "word_count": "250 to 500",
+        "instructions": (
+            "REDDIT POST FORMAT: "
+            "Write like a helpful community member, not a brand ad. "
+            "Lead with the useful insight or question. "
+            "Use short sections and plain language. "
+            "Soft brand mention only if relevant. "
+            "Include 2 to 5 topical hashtags or community tags at the end if natural. "
+            "No Markdown ## headings. Never use hyphen or dash characters."
+        ),
+    },
+    "comment": {
+        "content_type": "linkedin",
+        "platform_label": "comment",
+        "word_count": "40 to 120",
+        "instructions": (
+            "SOCIAL COMMENT FORMAT (for replies/comments on posts): "
+            "Write 2 to 5 short sentences that add value, agree thoughtfully, or ask a sharp follow up. "
+            "No hard sell. Optional soft brand mention only if natural. "
+            "End with 1 to 3 relevant hashtags maximum. "
+            "No Markdown headings. Never use hyphen or dash characters."
         ),
     },
 }
@@ -115,7 +167,8 @@ _SLIDE_RE = re.compile(r"\*\*Slide\s+\d+", re.IGNORECASE)
 
 class SocialWorkflow:
     """
-    Social media content workflow: LinkedIn, carousel, and X thread generation.
+    Social media content workflow for LinkedIn, X, Instagram, Facebook,
+    Reddit, comment replies, and carousels.
 
     Maps the caller's `platform` to the correct content_type and injects
     platform-specific formatting instructions into every writer call.
@@ -145,7 +198,8 @@ class SocialWorkflow:
         Parameters
         ----------
         user_input            : Topic or brief for the post/carousel/thread.
-        platform              : "linkedin" | "carousel" | "x".
+        platform              : "linkedin" | "carousel" | "x" | "instagram" |
+                                "facebook" | "reddit" | "comment".
         brand                 : Optional brand name or alias.
         objective             : "engagement" (default) | "authority" | "leads".
         language              : "English" (default) | "Hindi".
@@ -361,13 +415,32 @@ class SocialWorkflow:
         try:
             from memory.conversation_memory import ConversationMemory
             mem = ConversationMemory(session_id=session_id)
-            mem.add_user_message(user_input)
+            mem.add_user_message(
+                user_input,
+                metadata={"workflow": "social", "platform": platform},
+            )
+            draft = ""
+            final = state.get("final_output") or {}
+            content = final.get("content") or {}
+            if isinstance(content, dict):
+                draft = str(content.get("markdown") or "")
+            hashtags = final.get("hashtags") or state.get("hashtags") or []
             summary = (
                 f"[SocialWorkflow:{platform}] status={state.get('workflow_status')} | "
                 f"score={state.get('review', {}).get('score', 'N/A')} | "
-                f"hashtags={len(state.get('hashtags', []))}"
+                f"hashtags={len(hashtags)}\n\n"
+                f"{draft[:2500]}"
             )
-            mem.add_assistant_message(summary)
+            if hashtags:
+                summary += "\n\nHashtags: " + " ".join(str(h) for h in hashtags)
+            mem.add_assistant_message(
+                summary,
+                metadata={
+                    "workflow": "social",
+                    "platform": platform,
+                    "hashtags": hashtags,
+                },
+            )
             mem.save_workflow_state(state)
         except Exception as exc:
             logger.warning("ConversationMemory save failed (non-fatal): %s", exc)
