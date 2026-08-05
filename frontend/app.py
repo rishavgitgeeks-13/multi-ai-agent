@@ -36,18 +36,46 @@ if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 if "results" not in st.session_state:
     st.session_state.results = {}          # keyed by tab name
-API_BASE_URL = "http://54.218.34.106:9000"
-#API_BASE_URL = "http://localhost:8000"
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+if "username" not in st.session_state:
+    st.session_state.username = ""
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []     # session-wise UI turns
+if "history_loaded" not in st.session_state:
+    st.session_state.history_loaded = False
+#API_BASE_URL = "http://54.218.34.106:9000"
+API_BASE_URL = "http://localhost:8000"
 
 # Always point at the deployed API (do not let an old empty session value stick).
 st.session_state.api_url = API_BASE_URL
 if "brands" not in st.session_state:
     st.session_state.brands = []
 
+# Brand font → CSS stack (licensed fonts fall back gracefully)
+_BRAND_FONT_STACKS = {
+    "Google Sans Flex Regular": (
+        '"Google Sans Flex", "Google Sans", "Product Sans", system-ui, sans-serif'
+    ),
+    "Open Sans Regular": '"Open Sans", "Segoe UI", sans-serif',
+    "Gotham Regular": 'Gotham, Montserrat, "Helvetica Neue", Arial, sans-serif',
+    "Inter Regular": 'Inter, "Segoe UI", sans-serif',
+}
+
 
 # ==========================================================================
 # Helper: call the API
 # ==========================================================================
+
+
+def _auth_credentials() -> tuple:
+    """Return (username, password) from settings / env defaults."""
+    try:
+        from config.settings import settings
+
+        return settings.APP_USERNAME, settings.APP_PASSWORD
+    except Exception:
+        return "admin", "admin123"
 
 
 def call_api(endpoint: str, payload: Dict[str, Any], timeout: int = 900) -> Dict[str, Any]:
@@ -92,6 +120,112 @@ def check_api_health() -> bool:
         return resp.status_code == 200
     except Exception:
         return False
+
+
+def fetch_session_history(session_id: str, limit: int = 50) -> List[Dict]:
+    """Load conversation turns from API memory (Mongo-backed)."""
+    try:
+        resp = requests.get(
+            f"{st.session_state.api_url}/api/sessions/{session_id}/history",
+            params={"limit": limit},
+            timeout=8,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            return data.get("turns") or []
+    except Exception:
+        pass
+    return []
+
+
+def append_chat_turn(
+    role: str,
+    content: str,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Append a turn to the in-browser session chat history."""
+    st.session_state.chat_history.append(
+        {
+            "role": role,
+            "content": content,
+            "metadata": metadata or {},
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+    )
+
+
+def record_generation(
+    user_prompt: str,
+    result: Dict[str, Any],
+    workflow: str,
+) -> None:
+    """Mirror a generation into the session chat panel (API also persists to memory)."""
+    append_chat_turn("user", user_prompt, {"workflow": workflow})
+    if not result.get("ok"):
+        errs = result.get("errors") or ["Generation failed."]
+        append_chat_turn(
+            "assistant",
+            "Error: " + "; ".join(str(e) for e in errs),
+            {"workflow": workflow, "ok": False},
+        )
+        return
+
+    md = _get_markdown(result)
+    review = result.get("review") or {}
+    final = result.get("final_output") or {}
+    social_meta = result.get("social_meta") or {}
+    hashtags = final.get("hashtags") or social_meta.get("hashtags") or []
+    preview = (md[:1200] + "…") if len(md) > 1200 else md
+    summary = (
+        f"[{workflow}] score={review.get('score', 'N/A')} | "
+        f"status={review.get('status', 'N/A')}\n\n{preview}"
+    )
+    if hashtags and workflow != "email":
+        summary += "\n\nHashtags: " + " ".join(str(h) for h in hashtags)
+    append_chat_turn(
+        "assistant",
+        summary,
+        {
+            "workflow": workflow,
+            "ok": True,
+            "score": review.get("score"),
+            "hashtags": hashtags,
+        },
+    )
+
+
+def _font_stack_for_result(result: Dict, brand_label: str = "") -> str:
+    """Resolve CSS font-family from result payload or selected brand."""
+    final = result.get("final_output") or {}
+    font_name = str(final.get("font") or "").strip()
+    if not font_name and brand_label and brand_label != "Auto-detect":
+        for b in st.session_state.brands:
+            if b.get("display_name") == brand_label or b.get("name") == brand_label:
+                font_name = str(b.get("font") or "").strip()
+                break
+    return _BRAND_FONT_STACKS.get(font_name, '"Segoe UI", system-ui, sans-serif')
+
+
+def _inject_brand_font_css(font_stack: str) -> None:
+    """Apply brand font + load webfonts for Open Sans / Inter."""
+    st.markdown(
+        """
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Open+Sans:wght@400;600&family=Montserrat:wght@400;500;600&display=swap" rel="stylesheet">
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f"""
+        <style>
+        .brand-content-preview, .brand-content-preview * {{
+            font-family: {font_stack} !important;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # ==========================================================================
@@ -153,8 +287,9 @@ def display_review_panel(review: Dict) -> None:
                 st.markdown(f"⚠️ {issue}")
 
 
-def display_metadata_panel(metadata: Dict, result: Dict) -> None:
+def display_metadata_panel(metadata: Dict, result: Dict, workflow_type: str = "") -> None:
     seo = result.get("final_output", {}).get("seo") or {}
+    final = result.get("final_output") or {}
 
     col1, col2, col3 = st.columns(3)
     col1.metric("Word Count", metadata.get("word_count", "—"))
@@ -163,6 +298,10 @@ def display_metadata_panel(metadata: Dict, result: Dict) -> None:
         read_time = metadata.get("reading_time_minutes", "—")
     col2.metric("Read Time", f"{read_time} min")
     col3.metric("Language", metadata.get("language", "—"))
+
+    font_name = final.get("font") or ""
+    if font_name:
+        st.markdown(f"**Brand Font:** {font_name}")
 
     if seo:
         st.markdown("#### SEO Fields")
@@ -174,6 +313,17 @@ def display_metadata_panel(metadata: Dict, result: Dict) -> None:
         primary = seo.get("primary_keywords", [])
         if primary:
             st.markdown(f"**Primary Keywords:** {', '.join(primary[:5])}")
+
+    # Hashtags for every content type except email
+    if workflow_type != "email":
+        hashtags = (
+            final.get("hashtags")
+            or (result.get("social_meta") or {}).get("hashtags")
+            or []
+        )
+        if hashtags:
+            st.markdown("#### Hashtags")
+            st.markdown(" ".join(str(h) for h in hashtags))
 
 
 def display_seo_analysis_panel(seo_analysis: Dict) -> None:
@@ -281,7 +431,24 @@ def display_result(result: Dict, workflow_type: str) -> None:
     # --- Content tab ---
     with tabs[0]:
         if markdown:
+            font_stack = _font_stack_for_result(result)
+            _inject_brand_font_css(font_stack)
+            final = result.get("final_output") or {}
+            if final.get("font"):
+                st.caption(f"Brand font: {final.get('font')}")
+            st.markdown(
+                f'<div class="brand-content-preview" style="font-family:{font_stack}">',
+                unsafe_allow_html=True,
+            )
             st.markdown(_escape_markdown_currency(markdown))
+            hashtags = (
+                final.get("hashtags")
+                or (result.get("social_meta") or {}).get("hashtags")
+                or []
+            )
+            if hashtags and workflow_type != "email":
+                st.divider()
+                st.markdown("**Hashtags:** " + " ".join(str(h) for h in hashtags))
             st.divider()
             col1, col2 = st.columns([1, 4])
             col1.download_button(
@@ -302,7 +469,7 @@ def display_result(result: Dict, workflow_type: str) -> None:
 
     # --- Metadata tab ---
     with tabs[2]:
-        display_metadata_panel(result.get("metadata", {}), result)
+        display_metadata_panel(result.get("metadata", {}), result, workflow_type)
 
     # --- Extra workflow-specific tabs ---
     for i, (_, fn, data) in enumerate(extra_tabs.get(workflow_type, [])):
@@ -318,11 +485,43 @@ def display_result(result: Dict, workflow_type: str) -> None:
 
 
 # ==========================================================================
+# Login gate
+# ==========================================================================
+
+if not st.session_state.authenticated:
+    st.title("Editorial Intelligence System")
+    st.caption("Sign in to continue")
+    with st.form("login_form"):
+        login_user = st.text_input("Username", autocomplete="username")
+        login_pass = st.text_input(
+            "Password",
+            type="password",
+            autocomplete="current-password",
+        )
+        login_submit = st.form_submit_button("Log in", type="primary", use_container_width=True)
+    if login_submit:
+        expected_user, expected_pass = _auth_credentials()
+        if login_user.strip() == expected_user and login_pass == expected_pass:
+            st.session_state.authenticated = True
+            st.session_state.username = login_user.strip()
+            st.success("Logged in.")
+            st.rerun()
+        else:
+            st.error("Invalid username or password.")
+    st.stop()
+
+
+# ==========================================================================
 # Sidebar
 # ==========================================================================
 
 with st.sidebar:
     st.title("⚙️ Settings")
+    st.caption(f"Signed in as **{st.session_state.username or 'user'}**")
+    if st.button("Log out", use_container_width=True):
+        st.session_state.authenticated = False
+        st.session_state.username = ""
+        st.rerun()
 
     # API health indicator
     if st.button("Check API"):
@@ -341,7 +540,57 @@ with st.sidebar:
     if st.button("New Session"):
         st.session_state.session_id = str(uuid.uuid4())
         st.session_state.results = {}
+        st.session_state.chat_history = []
+        st.session_state.history_loaded = False
         st.rerun()
+
+    st.divider()
+
+    # Session chat history (UI + memory)
+    st.subheader("Chat history")
+    if not st.session_state.history_loaded:
+        remote = fetch_session_history(st.session_state.session_id)
+        if remote:
+            # Prefer memory-backed history when available
+            st.session_state.chat_history = [
+                {
+                    "role": t.get("role", ""),
+                    "content": t.get("content", ""),
+                    "metadata": t.get("metadata") or {},
+                    "created_at": t.get("created_at") or "",
+                }
+                for t in remote
+            ]
+        st.session_state.history_loaded = True
+
+    if st.button("Refresh history"):
+        remote = fetch_session_history(st.session_state.session_id)
+        if remote:
+            st.session_state.chat_history = [
+                {
+                    "role": t.get("role", ""),
+                    "content": t.get("content", ""),
+                    "metadata": t.get("metadata") or {},
+                    "created_at": t.get("created_at") or "",
+                }
+                for t in remote
+            ]
+        st.session_state.history_loaded = True
+        st.rerun()
+
+    history = st.session_state.chat_history or []
+    if not history:
+        st.caption("No turns in this session yet.")
+    else:
+        st.caption(f"{len(history)} turn(s) in this session")
+        for i, turn in enumerate(reversed(history[-30:])):
+            role = (turn.get("role") or "unknown").title()
+            preview = (turn.get("content") or "")[:180]
+            with st.expander(f"{role}: {preview}…", expanded=False):
+                st.markdown(turn.get("content") or "")
+                meta = turn.get("metadata") or {}
+                if meta:
+                    st.caption(str(meta))
 
     st.divider()
 
@@ -356,6 +605,8 @@ with st.sidebar:
             with st.expander(brand["display_name"]):
                 st.caption(f"Tone: {brand['tone']}")
                 st.caption(f"CTA: {brand['cta']}")
+                if brand.get("font"):
+                    st.caption(f"Font: {brand['font']}")
     else:
         st.caption("Brands unavailable (API offline or brands.yaml unloaded)")
 
@@ -462,6 +713,8 @@ with tab_auto:
                 )
 
             st.session_state.results["auto"] = result
+            record_generation(a_user_input, result, "auto")
+            st.session_state.history_loaded = True
 
     if "auto" in st.session_state.results:
         workflow = (
@@ -524,6 +777,8 @@ with tab_content:
             with st.spinner("Running 5-agent pipeline… this can take a few minutes."):
                 result = call_api("generate/content", payload)
             st.session_state.results["content"] = result
+            record_generation(c_user_input, result, "content")
+            st.session_state.history_loaded = True
 
     if "content" in st.session_state.results:
         st.divider()
@@ -575,6 +830,8 @@ with tab_email:
             with st.spinner("Generating email… this can take 1–3 minutes."):
                 result = call_api("generate/email", payload)
             st.session_state.results["email"] = result
+            record_generation(e_user_input, result, "email")
+            st.session_state.history_loaded = True
 
     if "email" in st.session_state.results:
         st.divider()
@@ -621,6 +878,8 @@ with tab_seo:
             with st.spinner("Running SEO pipeline… this can take a few minutes."):
                 result = call_api("generate/seo", payload)
             st.session_state.results["seo"] = result
+            record_generation(s_user_input, result, "seo")
+            st.session_state.history_loaded = True
 
     if "seo" in st.session_state.results:
         st.divider()
@@ -633,7 +892,10 @@ with tab_seo:
 
 with tab_social:
     st.subheader("Social Media Content")
-    st.caption("LinkedIn posts, carousels, and X threads.")
+    st.caption(
+        "LinkedIn, X, Instagram, Facebook, Reddit, carousel, and comment replies "
+        "(for team commenting)."
+    )
 
     with st.form("social_form"):
         so_user_input = st.text_area(
@@ -642,7 +904,18 @@ with tab_social:
             height=100,
         )
         col1, col2 = st.columns(2)
-        so_platform = col1.selectbox("Platform", ["linkedin", "carousel", "x"])
+        so_platform = col1.selectbox(
+            "Platform",
+            [
+                "linkedin",
+                "x",
+                "instagram",
+                "facebook",
+                "reddit",
+                "comment",
+                "carousel",
+            ],
+        )
         so_brand = col2.selectbox("Brand", brand_names, key="so_brand")
         col3, col4 = st.columns(2)
         so_objective = col3.selectbox("Objective", ["engagement", "authority", "leads"], key="so_obj")
@@ -669,6 +942,8 @@ with tab_social:
             with st.spinner("Generating social content… this can take 1–3 minutes."):
                 result = call_api("generate/social", payload)
             st.session_state.results["social"] = result
+            record_generation(so_user_input, result, "social")
+            st.session_state.history_loaded = True
 
     if "social" in st.session_state.results:
         st.divider()
