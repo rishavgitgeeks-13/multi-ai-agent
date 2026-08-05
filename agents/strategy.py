@@ -59,6 +59,11 @@ def strategy_node(state: ContentState) -> ContentState:
     constraints = state.get("user_constraints") or {}
     target_words = constraints.get("target_word_count")
 
+    # Hashtags for every content type except email
+    hashtag_platform = "email" if str(content_type).lower() == "email" or str(
+        platform or ""
+    ).lower() == "email" else (platform or content_type or "website")
+
     # ------------------------------------------------------------------
     # 1 — SEO Service
     # ------------------------------------------------------------------
@@ -103,7 +108,7 @@ def strategy_node(state: ContentState) -> ContentState:
             research_data=research,
             brand_context=brand,
             seo_blueprint=seo_blueprint,
-            platform=platform,
+            platform=hashtag_platform,
         )
 
         logger.info(
@@ -222,6 +227,7 @@ def strategy_node(state: ContentState) -> ContentState:
         "content_type": content_type,
         "platform": platform,
         "language": language,
+        "font": brand.get("font") or "",
 
         # Keyword strategy
         "keywords": seo_blueprint.get(
