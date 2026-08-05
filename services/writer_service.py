@@ -87,6 +87,7 @@ class ContentOutline:
     sections: List[ContentSection]
     brand_name: str = ""
     awareness_first: bool = False
+    font: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -416,6 +417,10 @@ AWARENESS-FIRST PACING (mandatory — write an awareness piece, not a sales broc
 
         # Strip common AI-cliché openers that models still insert despite prompts.
         draft = self._strip_ai_cliches(draft or "")
+        # Brand guideline: never ship dashes/hyphens/em-dashes in body copy.
+        from services.text_cleanup import strip_all_dashes
+
+        draft = strip_all_dashes(draft)
 
         logger.info(
             "WriterService complete | content_type=%s | words=%d | target=%s",
@@ -537,6 +542,7 @@ AWARENESS-FIRST PACING (mandatory — write an awareness piece, not a sales broc
             sections=sections,
             brand_name=self._brand_display_name(brand_context),
             awareness_first=self._is_awareness_first(brand_context),
+            font=str(brand_context.get("font") or "").strip(),
         )
 
     def _generate_outline(
@@ -623,6 +629,8 @@ Return a JSON object with this exact schema:
 Rules:
 - {n_sections} sections
 {awareness_outline_rules}- H1 title MUST include the first primary keyword naturally
+- H1 must be grammatical English (never scrambled phrases like "Cases India Nannies")
+- Prefer titles like "Nanny Abuse Cases in India: …" over keyword-order dumps
 {keyword_assign_rule}
 - Headings are benefit-driven and keyword-rich
 - Each brief is specific enough to write a full section from
@@ -679,6 +687,7 @@ Rules:
             sections=sections,
             brand_name=self._brand_display_name(brand_context),
             awareness_first=self._is_awareness_first(brand_context),
+            font=str(brand_context.get("font") or "").strip(),
         )
 
     def _fallback_outline(
@@ -741,6 +750,7 @@ Rules:
             sections=sections,
             brand_name=brand_name,
             awareness_first=awareness_first,
+            font=str(brand_context.get("font") or "").strip(),
         )
 
     # ------------------------------------------------------------------
@@ -1317,6 +1327,12 @@ Write the complete {content_type}:
             "instruction text into the published draft.\n\n"
             + self._human_voice_guide(long_form=long_form)
         )
+        if outline.font:
+            base += (
+                f"\n\nBRAND FONT GUIDELINE: Publish-ready copy for this brand uses "
+                f"'{outline.font}'. Do not mention the font name in the article body; "
+                "follow brand voice and the no-dash typography rules above."
+            )
         if primary_topic:
             base += f"\n\nPRIMARY TOPIC LOCK:\n{primary_topic}"
         if rewrite_instruction:
@@ -1348,6 +1364,13 @@ Write the complete {content_type}:
             "\"a testament to\", \"plays a crucial/vital/pivotal role\", \"navigating the\", "
             "\"elevate your\", \"rest assured\", \"look no further\", \"we've got you covered\".\n"
             "- Never start a sentence with Moreover, Furthermore, Additionally, or In conclusion.\n"
+            "- Never use stiff scaffolding: \"First, discuss…\", \"In this article, we will…\", "
+            "\"Let us examine…\", \"This article explores…\", \"As we delve…\".\n"
+            "- Prefer plain spoken words. Say \"NRI families\" or \"families living abroad\" — "
+            "never \"expatriates\". Prefer \"parents\" over \"guardians seeking premium care\" "
+            "unless that exact segment is required.\n"
+            "- Prefer everyday phrasing over academic paper tone (avoid long citation-title dumps "
+            "as sentence subjects; attribute briefly).\n"
             f"{secondary_line}"
             "- Use contractions naturally (it's, you're, don't, we've).\n"
             "- Prefer concrete, specific nouns and real examples over vague generalities.\n"
@@ -1355,7 +1378,11 @@ Write the complete {content_type}:
             "- Do not over-hedge or over-explain. Trust the reader.\n"
             "- Avoid formulaic scaffolding (e.g. rigidly equal sections, a forced summary that "
             "restates everything). End with a genuine, specific closing rather than a generic wrap-up.\n"
-            "- Keep it professional and on-brand — natural, not slangy or unprofessional.\n"
+            "- Keep it professional and on-brand, natural, not slangy or unprofessional.\n"
+            "- CRITICAL TYPOGRAPHY: Never use any dash characters in the draft "
+            "(no hyphen -, no en dash, no em dash). Rewrite as separate words or commas "
+            "(write 'well being' not 'well-being'; '2020 to 2026' not '2020-2026'). "
+            "Use asterisk bullets (*) instead of dash bullets.\n"
             "- No emojis unless explicitly requested."
         )
 
@@ -1457,6 +1484,14 @@ Write the complete {content_type}:
             (r"(?i)\bWhen it comes to\s+", "For "),
             (r"(?i)\bAt the end of the day,?\s*", ""),
             (r"(?i)\bNeedless to say,?\s*", ""),
+            (r"(?i)\bexpatriates\b", "families living abroad"),
+            (r"(?i)\bexpatriate\b", "family living abroad"),
+            (r"(?i)\bFirst,\s+discuss\b", "Start with"),
+            (r"(?i)\bFirst discuss\b", "Start with"),
+            (r"(?i)\bThis article explores\b", "Here's a clear look at"),
+            (r"(?i)\bIn this article,?\s+we will\b", "We'll"),
+            (r"(?i)\bLet us examine\b", "Look at"),
+            (r"(?i)\bAs we delve into\b", "On"),
         ]
         text = draft
         for pattern, repl in replacements:
