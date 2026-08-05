@@ -307,12 +307,21 @@ class EmailWorkflow:
         try:
             from memory.conversation_memory import ConversationMemory
             mem = ConversationMemory(session_id=session_id)
-            mem.add_user_message(user_input)
+            mem.add_user_message(user_input, metadata={"workflow": "email"})
+            draft = ""
+            final = state.get("final_output") or {}
+            content = final.get("content") or {}
+            if isinstance(content, dict):
+                draft = str(content.get("markdown") or "")
             summary = (
                 f"[EmailWorkflow] status={state.get('workflow_status')} | "
-                f"score={state.get('review', {}).get('score', 'N/A')}"
+                f"score={state.get('review', {}).get('score', 'N/A')}\n\n"
+                f"{draft[:2500]}"
             )
-            mem.add_assistant_message(summary)
+            mem.add_assistant_message(
+                summary,
+                metadata={"workflow": "email"},
+            )
             mem.save_workflow_state(state)
         except Exception as exc:
             logger.warning("ConversationMemory save failed (non-fatal): %s", exc)
