@@ -87,6 +87,12 @@ class Settings(BaseSettings):
     MAX_ARTICLE_WORDS: int = 2500
 
     # ==========================================================
+    # Frontend / API auth (optional simple gate)
+    # ==========================================================
+    APP_USERNAME: str = "admin"
+    APP_PASSWORD: str = "admin123"
+
+    # ==========================================================
     # Environment file configuration
     # ==========================================================
     model_config = SettingsConfigDict(
