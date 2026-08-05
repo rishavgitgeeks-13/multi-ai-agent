@@ -40,6 +40,7 @@ from api.routes.content import router as content_router
 from api.routes.email import router as email_router
 from api.routes.seo import router as seo_router
 from api.routes.social import router as social_router
+from api.routes.sessions import router as sessions_router
 from api.schemas import BrandInfo, BrandsResponse, ErrorResponse, HealthResponse
 
 logging.basicConfig(
@@ -124,6 +125,7 @@ app.include_router(content_router, prefix="/api")
 app.include_router(email_router, prefix="/api")
 app.include_router(seo_router, prefix="/api")
 app.include_router(social_router, prefix="/api")
+app.include_router(sessions_router, prefix="/api")
 app.include_router(generate_router, prefix="/api",)
 
 
@@ -168,6 +170,7 @@ async def list_brands() -> BrandsResponse:
                 reader_segment=b.get("reader_segment", []),
                 cta=b.get("cta", ""),
                 namespace=b.get("namespace", ""),
+                font=b.get("font", "") or "",
             )
             for b in all_brands.values()
         ]
