@@ -28,7 +28,7 @@ import os
 import re
 from typing import Dict, List, Optional
 
-from anthropic import Anthropic
+from openai import OpenAI
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -42,8 +42,13 @@ PLATFORM_LIMITS: Dict[str, int] = {
     "instagram": 30,
     "x": 3,
     "twitter": 3,
-    "website": 5,
-    "blog": 5,
+    "facebook": 8,
+    "reddit": 5,
+    "comment": 5,
+    "carousel": 10,
+    "website": 8,
+    "blog": 8,
+    "article": 8,
     "email": 0,   # hashtags have no value in email
 }
 
@@ -54,16 +59,16 @@ class HashtagService:
     """Generates a ranked, platform-optimised hashtag list."""
 
     def __init__(self) -> None:
-        if not settings.ANTHROPIC_API_KEY:
+        if not settings.OPENAI_API_KEY:
             raise ValueError(
-                "ANTHROPIC_API_KEY is not configured."
+                "OPENAI_API_KEY is not configured."
             )
 
-        self._anthropic = Anthropic(
-            api_key=settings.ANTHROPIC_API_KEY
+        self._openai = OpenAI(
+            api_key=settings.OPENAI_API_KEY
         )
 
-        self._model = settings.ANTHROPIC_MODEL
+        self._model = settings.OPENAI_MODEL
         self._temperature = settings.DEFAULT_TEMPERATURE
 
         logger.info(
@@ -153,7 +158,7 @@ class HashtagService:
         platform: str,
         cap: int,
     ) -> List[str]:
-        """Call the Anthropic model and return a raw hashtag list."""
+        """Call the OpenAI model and return a raw hashtag list."""
         prompt = self._build_prompt(
             user_input=user_input,
             seed_keywords=seed_keywords,
@@ -163,18 +168,23 @@ class HashtagService:
             cap=cap,
         )
         try:
-            response = self._anthropic.messages.create(
+            response = self._openai.chat.completions.create(
                 model=self._model,
                 max_tokens=512,
                 temperature=self._temperature,
-                system=(
-                    "You are a social media and SEO expert. "
-                    "You generate precise, high-performing hashtags. "
-                    "Return valid JSON only — no prose, no markdown fences."
-                ),
-                messages=[{"role": "user", "content": prompt}],
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a social media and SEO expert. "
+                            "You generate precise, high-performing hashtags. "
+                            "Return valid JSON only — no prose, no markdown fences."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
             )
-            return self._parse_response(response.content[0].text)
+            return self._parse_response(response.choices[0].message.content or "")
         except Exception as exc:
             logger.error("HashtagService LLM call failed: %s — using seed fallback", exc)
             return self._fallback_hashtags(seed_keywords, cap)
