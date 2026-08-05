@@ -321,14 +321,29 @@ class SEOWorkflow:
         try:
             from memory.conversation_memory import ConversationMemory
             mem = ConversationMemory(session_id=session_id)
-            mem.add_user_message(user_input)
+            mem.add_user_message(user_input, metadata={"workflow": "seo"})
             seo = state.get("seo", {})
+            draft = ""
+            final = state.get("final_output") or {}
+            content = final.get("content") or {}
+            if isinstance(content, dict):
+                draft = str(content.get("markdown") or "")
+            hashtags = final.get("hashtags") or state.get("hashtags") or []
+            primary = ""
+            if seo.get("primary_keywords"):
+                primary = seo.get("primary_keywords", [""])[0]
             summary = (
                 f"[SEOWorkflow] status={state.get('workflow_status')} | "
                 f"score={state.get('review', {}).get('score', 'N/A')} | "
-                f"primary_keyword={seo.get('primary_keywords', [''])[0] if seo.get('primary_keywords') else 'N/A'}"
+                f"primary_keyword={primary or 'N/A'}\n\n"
+                f"{draft[:2500]}"
             )
-            mem.add_assistant_message(summary)
+            if hashtags:
+                summary += "\n\nHashtags: " + " ".join(str(h) for h in hashtags)
+            mem.add_assistant_message(
+                summary,
+                metadata={"workflow": "seo", "hashtags": hashtags},
+            )
             mem.save_workflow_state(state)
         except Exception as exc:
             logger.warning("ConversationMemory save failed (non-fatal): %s", exc)
