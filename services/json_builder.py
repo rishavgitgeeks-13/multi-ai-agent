@@ -44,15 +44,19 @@ class JSONBuilder:
         """Build and return the final output dict."""
         logger.info("JSONBuilder.run()")
 
+        hashtags = self._resolve_hashtags(strategy)
+        content_block = self._build_content(content, strategy, hashtags)
+
         final = {
             "status": "success",
             "request": self._build_request(content, strategy),
-            "content": self._build_content(content),
+            "content": content_block,
             "metadata": self._build_metadata(metadata),
             "seo": self._build_seo(content, metadata, strategy),
-            "hashtags": self._resolve_hashtags(strategy),
+            "hashtags": hashtags,
             "cta": str(strategy.get("cta") or ""),
             "summary": self._build_summary(metadata),
+            "font": str(strategy.get("font") or ""),
         }
 
         logger.info(
@@ -79,11 +83,34 @@ class JSONBuilder:
     # Content block
     # ------------------------------------------------------------------
 
-    def _build_content(self, content: Dict) -> Dict:
+    def _build_content(
+        self,
+        content: Dict,
+        strategy: Dict,
+        hashtags: List[str],
+    ) -> Dict:
         """Project the formatter output into the content block."""
+        markdown = content.get("markdown", "") or ""
+        platform = str(
+            content.get("platform") or strategy.get("platform") or "website"
+        ).lower()
+        content_type = str(
+            content.get("content_type") or strategy.get("content_type") or "article"
+        ).lower()
+
+        # Append hashtags for every content type except email (if not already present)
+        if (
+            hashtags
+            and content_type != "email"
+            and platform != "email"
+            and not any(tag.lower() in markdown.lower() for tag in hashtags[:2])
+        ):
+            tag_line = " ".join(hashtags)
+            markdown = f"{markdown.rstrip()}\n\nHashtags: {tag_line}\n"
+
         return {
             "title": content.get("title", ""),
-            "markdown": content.get("markdown", ""),
+            "markdown": markdown,
             "sections": content.get("sections", []),
             "table_of_contents": content.get("table_of_contents", []),
         }
