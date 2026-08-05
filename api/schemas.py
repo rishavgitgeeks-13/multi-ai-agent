@@ -87,7 +87,10 @@ class SocialRequest(BaseModel):
     """POST /api/generate/social"""
 
     user_input: str = Field(..., min_length=3, description="Topic or brief for the post.")
-    platform: str = Field("linkedin", description="linkedin | carousel | x")
+    platform: str = Field(
+        "linkedin",
+        description="linkedin | carousel | x | instagram | facebook | reddit | comment",
+    )
     brand: Optional[str] = Field(None, description="Brand name or alias.")
     objective: str = Field("engagement", description="engagement | authority | leads")
     language: str = Field("English", description="English | Hindi")
@@ -188,6 +191,7 @@ class BrandInfo(BaseModel):
     reader_segment: List[str]
     cta: str
     namespace: str
+    font: str = ""
 
 
 class BrandsResponse(BaseModel):
