@@ -41,6 +41,7 @@ from api.routes.email import router as email_router
 from api.routes.seo import router as seo_router
 from api.routes.social import router as social_router
 from api.routes.sessions import router as sessions_router
+from api.routes.chat_history import router as chat_history_router
 from api.schemas import BrandInfo, BrandsResponse, ErrorResponse, HealthResponse
 
 logging.basicConfig(
@@ -126,6 +127,7 @@ app.include_router(email_router, prefix="/api")
 app.include_router(seo_router, prefix="/api")
 app.include_router(social_router, prefix="/api")
 app.include_router(sessions_router, prefix="/api")
+app.include_router(chat_history_router, prefix="/api")
 app.include_router(generate_router, prefix="/api",)
 
 
