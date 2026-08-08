@@ -144,15 +144,20 @@ _PLATFORM_CONFIG: Dict[str, Dict[str, Any]] = {
         ),
     },
     "comment": {
-        "content_type": "linkedin",
+        "content_type": "comment",
         "platform_label": "comment",
-        "word_count": "40 to 120",
+        "word_count": "25 to 80",
         "instructions": (
-            "SOCIAL COMMENT FORMAT (for replies/comments on posts): "
-            "Write 2 to 5 short sentences that add value, agree thoughtfully, or ask a sharp follow up. "
-            "No hard sell. Optional soft brand mention only if natural. "
-            "End with 1 to 3 relevant hashtags maximum. "
-            "No Markdown headings. Never use hyphen or dash characters."
+            "SOCIAL COMMENT FORMAT (reply under someone else's post): "
+            "Write ONLY a natural comment/reply the user can paste under a post. "
+            "INTENT LOCK: Match the user's intent exactly "
+            "(agree, add a useful insight, ask a follow up, congratulate, gently correct, or soft brand mention). "
+            "If the user pasted a post or described a post, reply to THAT post — do not invent a new post. "
+            "2 to 5 short sentences. Conversational first person or direct address is fine. "
+            "NO hashtags. NO SEO keywords list. NO titles/headings. NO bullet lists. "
+            "NO CTA buttons, NO 'Book a call' hard sell, NO brand dump, NO hashtag block. "
+            "Optional soft brand mention only if the user asked for it and it fits in one short phrase. "
+            "Never use hyphen or dash characters."
         ),
     },
 }
@@ -227,10 +232,27 @@ class SocialWorkflow:
 
         # Build platform-aware writer instructions
         platform_instructions = config["instructions"]
+        if platform == "comment":
+            platform_instructions += (
+                " Output must be paste ready as a comment only — nothing else."
+            )
         if additional_instructions:
+            # Keep length asks (e.g. "10 words") visible to Writer + Manager merge
             platform_instructions += " " + additional_instructions
+            # Also prefix onto user_input so safety constraint extraction sees it
+            # when Manager only scans user_input (belt-and-suspenders with Manager merge).
+            if re.search(r"\b\d{1,5}\s*[\-]?\s*words?\b", additional_instructions, re.I):
+                user_input = f"{user_input.strip()} ({additional_instructions.strip()})"
 
-        resolved_input = f"[Brand: {brand}] {user_input}" if brand else user_input
+        # For comments, keep brand hint soft so Writer does not turn it into a promo post
+        if platform == "comment":
+            resolved_input = (
+                f"[Brand: {brand}] [Format: social comment reply] {user_input}"
+                if brand
+                else f"[Format: social comment reply] {user_input}"
+            )
+        else:
+            resolved_input = f"[Brand: {brand}] {user_input}" if brand else user_input
 
         initial_state = self._build_state(
             request_id=request_id,
@@ -262,9 +284,27 @@ class SocialWorkflow:
         # ------------------------------------------------------------------
         # Post-process: extract social-specific metadata
         # ------------------------------------------------------------------
+        draft = final_state.get("draft", "") or ""
+        hashtags = final_state.get("hashtags", []) or []
+        if platform == "comment":
+            # Comments never ship hashtags — strip if model still added any
+            hashtags = []
+            draft = self._strip_comment_noise(draft)
+            final_state["draft"] = draft
+            final_state["hashtags"] = []
+            if isinstance(final_state.get("final_output"), dict):
+                fo = dict(final_state["final_output"])
+                fo["hashtags"] = []
+                content = fo.get("content") or {}
+                if isinstance(content, dict) and content.get("markdown"):
+                    content = dict(content)
+                    content["markdown"] = draft
+                    fo["content"] = content
+                final_state["final_output"] = fo
+
         social_meta = self._extract_social_meta(
-            draft=final_state.get("draft", ""),
-            hashtags=final_state.get("hashtags", []),
+            draft=draft,
+            hashtags=hashtags,
             platform=platform,
         )
 
@@ -278,6 +318,34 @@ class SocialWorkflow:
     # ------------------------------------------------------------------
     # Social-specific post-processing
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _strip_comment_noise(draft: str) -> str:
+        """Remove hashtags, headings, and CTA/hashtag footers from a comment draft."""
+        if not draft:
+            return draft
+        lines: List[str] = []
+        for line in draft.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                if lines and lines[-1] != "":
+                    lines.append("")
+                continue
+            # Drop markdown headings / slide labels
+            if re.match(r"^#{1,6}\s+", stripped):
+                continue
+            if stripped.lower().startswith("hashtags:"):
+                continue
+            # Drop pure hashtag lines
+            if re.fullmatch(r"(?:#\w+\s*)+", stripped):
+                continue
+            # Remove inline trailing hashtag clusters
+            cleaned = re.sub(r"(?:\s#\w+){1,}\s*$", "", stripped).strip()
+            if cleaned:
+                lines.append(cleaned)
+        text = "\n".join(lines).strip()
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text
 
     @staticmethod
     def _extract_social_meta(
