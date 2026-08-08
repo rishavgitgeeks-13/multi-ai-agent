@@ -66,25 +66,74 @@ def manager_node(state: ContentState) -> ContentState:
         )
         return state
 
+    # Length in Additional Instructions (e.g. "10 words") must count as target too
+    existing_instr = (state.get("additional_instructions") or "").strip()
+    if existing_instr:
+        try:
+            from_extra = safety_service.extract_constraints(existing_instr)
+            uc = dict(state.get("user_constraints") or {})
+            # Prefer explicit length from additional instructions when present
+            if from_extra.get("target_word_count"):
+                uc["target_word_count"] = from_extra["target_word_count"]
+                uc["word_count_flexible"] = from_extra.get(
+                    "word_count_flexible", uc.get("word_count_flexible", True)
+                )
+                if from_extra.get("target_word_count_min") is not None:
+                    uc["target_word_count_min"] = from_extra["target_word_count_min"]
+                if from_extra.get("target_word_count_max") is not None:
+                    uc["target_word_count_max"] = from_extra["target_word_count_max"]
+                mentions = list(uc.get("raw_length_mentions") or [])
+                mentions.extend(from_extra.get("raw_length_mentions") or [])
+                uc["raw_length_mentions"] = mentions
+            state["user_constraints"] = uc
+        except Exception:
+            pass
+
     state["brand_context"] = business_context_service.resolve(
         user_input=state["user_input"],
         brand=state.get("brand"),
     )
 
-    # Surface word-count constraint for Writer via strategy later
-    tw = (state.get("user_constraints") or {}).get("target_word_count")
-    if tw:
-        extra = f"User-requested target length: exactly about {tw} words. Adhere strictly."
-        existing = (state.get("additional_instructions") or "").strip()
-        state["additional_instructions"] = (
-            f"{existing}\n{extra}".strip() if existing else extra
+    # Language: manual UI selection wins; Auto follows prompt language (incl. Hinglish)
+    try:
+        from services.language_service import (
+            language_writer_instruction,
+            resolve_output_language,
         )
+
+        out_lang, lang_source = resolve_output_language(
+            state["user_input"],
+            state.get("language"),
+        )
+        state["language"] = out_lang
+        state["language_source"] = lang_source
+        lang_line = language_writer_instruction(out_lang)
+    except Exception:
+        lang_line = ""
+        out_lang = state.get("language") or "English"
+
+    # Surface word-count + language + keep additional_instructions intact for Writer
+    tw = (state.get("user_constraints") or {}).get("target_word_count")
+    extras = []
+    if tw:
+        extras.append(
+            f"User-requested target length: exactly about {tw} words. Adhere strictly."
+        )
+    if lang_line:
+        extras.append(lang_line)
+    # Preserve user additional instructions first (density, hashtags, etc.)
+    merged = existing_instr
+    if extras:
+        block = "\n".join(extras)
+        merged = f"{existing_instr}\n{block}".strip() if existing_instr else block
+    state["additional_instructions"] = merged
 
     state["workflow_status"] = "RUNNING"
     state["next_agent"] = "research"
     logger.info(
-        "manager_node PASS | topic=%s… | target_words=%s",
+        "manager_node PASS | topic=%s… | target_words=%s | language=%s",
         state["primary_topic"][:80],
         tw,
+        out_lang,
     )
     return state
