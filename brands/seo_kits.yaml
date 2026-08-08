@@ -1,0 +1,260 @@
+# Brand SEO / social kits (source: Fixed hashtags and Keywords.xlsx)
+# User-explicit word counts always override platform bands.
+
+kits:
+  gtib:
+    mandatory_hashtags:
+    - '#GTIB'
+    - '#InvestmentBanking'
+    - '#TechnologyMandA'
+    - '#FounderExit'
+    - '#BusinessValuation'
+    - '#TechnologyCompanies'
+    - '#StrategicAdvisory'
+    secondary_hashtags:
+    - '#CapitalRaising'
+    - '#BusinessGrowth'
+    - '#CrossBorderMA'
+    - '#StrategicBuyers'
+    - '#SellSideAdvisory'
+    - '#MergersAndAcquisitions'
+    - '#PrivateEquity'
+    - '#TechnologyFounders'
+    - '#FounderLedBusiness'
+    - '#BusinessExit'
+    - '#TechFounders'
+    - '#CorporateFinance'
+    - '#GrowthCapital'
+    - '#BusinessAcquisition'
+    - '#TechnologyIndustry'
+    brand_keywords:
+    - GTIB
+    - Global Tech Investment Bankers
+    primary_keywords:
+    - Investment Banking
+    - Technology M&A
+    - Founder Exit
+    secondary_keywords:
+    - Business Valuation
+    - Capital Raising
+    - Strategic Advisory
+    - Technology Companies
+    - Mergers & Acquisitions
+    service_keywords: []
+    require_brand_keyword: true
+    require_all_primary: false
+    require_all_secondary: false
+  kinvo:
+    mandatory_hashtags:
+    - '#KinvoCare'
+    - '#Childcare'
+    - '#NewbornCare'
+    - '#ParentingSupport'
+    - '#WorkingParents'
+    - '#NannyServices'
+    - '#VerifiedNanny'
+    - '#BabyCare'
+    - '#MotherCare'
+    - '#ChildcareServices'
+    - '#JapaNanny'
+    - '#DayNanny'
+    - '#Babysitter'
+    - '#24HourNanny'
+    secondary_hashtags: []
+    brand_keywords:
+    - KinvoCare
+    - kinvocare Nanny services
+    primary_keywords:
+    - Nanny Services
+    - Verified Nanny
+    - Verified Nannies
+    - Baby Care
+    - Newborn Care
+    - Japa Nanny
+    - Day Nanny
+    - Babysitter Services
+    - 24-Hour Nanny
+    - Mother Care Services
+    secondary_keywords: []
+    service_keywords: []
+    require_brand_keyword: true
+    require_all_primary: false
+    require_all_secondary: false
+  mpm:
+    mandatory_hashtags:
+    - '#MPMNRIProperties'
+    - '#NRIPropertyInvestment'
+    - '#LuxuryRealEstate'
+    - '#GurgaonRealEstate'
+    - '#NRIInvestment'
+    - '#LuxuryHomes'
+    - '#InvestInIndia'
+    secondary_hashtags:
+    - '#DLFProperties'
+    - '#LuxuryApartments'
+    - '#UltraLuxuryHomes'
+    - '#GolfCourseRoad'
+    - '#NRIInvestors'
+    - '#PropertyInvestment'
+    - '#RealEstateIndia'
+    - '#LuxuryLiving'
+    - '#CommercialRealEstate'
+    - '#RentalIncome'
+    - '#HighROI'
+    - '#WealthCreation'
+    - '#RealEstateInvestment'
+    - '#IndiaRealEstate'
+    - '#GurgaonProperties'
+    brand_keywords:
+    - MPM NRI Properties
+    primary_keywords:
+    - NRI Property Investment
+    - Luxury Real Estate
+    - Gurgaon Real Estate
+    secondary_keywords:
+    - Luxury Apartments in Gurgaon
+    - NRI Property Consultant
+    - Property Investment in India
+    - Luxury Property Investment
+    - DLF Properties
+    service_keywords: []
+    require_brand_keyword: true
+    require_all_primary: true
+    require_all_secondary: true
+  futuristix:
+    mandatory_hashtags:
+    - '#Futuristix'
+    - '#AIAutomation'
+    - '#AIAgents'
+    - '#BusinessAutomation'
+    - '#WorkflowAutomation'
+    - '#ArtificialIntelligence'
+    - '#AISolutions'
+    - '#EcommerceAutomation'
+    - '#MarketingAutomation'
+    - '#RecruitmentAutomation'
+    - '#HealthcareAutomation'
+    - '#LegalAutomation'
+    secondary_hashtags: []
+    brand_keywords:
+    - Futuristix
+    - Futuristix AI
+    - Futuristix Automation
+    - Futuristix AI Automation
+    primary_keywords:
+    - AI Automation Agency
+    - AI Agents for Business
+    - Business Process Automation
+    - AI Workflow Automation
+    - Custom AI Automation Solutions
+    - AI Automation for Small Business
+    - AI Solutions for SMEs
+    secondary_keywords: []
+    service_keywords:
+    - AI Automation for Ecommerce
+    - AI Automation for Marketing Agencies
+    - AI Automation for Recruitment Agencies
+    - AI Automation for Medical Clinics
+    - AI Automation for Law Firms
+    require_brand_keyword: true
+    require_all_primary: false
+    require_all_secondary: false
+  gcb:
+    mandatory_hashtags:
+    - '#GCBServices'
+    - '#Telecommunications'
+    - '#NetworkEngineering'
+    - '#WirelessInfrastructure'
+    - '#EnterpriseConnectivity'
+    secondary_hashtags: []
+    brand_keywords:
+    - GCB Services
+    primary_keywords:
+    - Telecommunications
+    - Network Engineering
+    - Wireless Infrastructure
+    - Enterprise Connectivity
+    secondary_keywords:
+    - Private 5G
+    - In-Building Wireless
+    - RF Engineering
+    - Network Deployment
+    - Network Optimization
+    - DAS (Distributed Antenna System)
+    - Small Cells
+    - Telecom Engineering
+    - Digital Infrastructure
+    - Workforce Solutions
+    - Telecom Staffing
+    - Network Design
+    - Campus Connectivity
+    - Healthcare Technology
+    - Smart Buildings
+    service_keywords: []
+    require_brand_keyword: true
+    require_all_primary: false
+    require_all_secondary: false
+platforms:
+  social_comment:
+    label: Social Comment / Reply
+    min_words: 25
+    max_words: 80
+    primary_usage: "0"
+    secondary_usage: "0"
+    density: "n/a"
+  linkedin_copy:
+    label: LinkedIn Content Copy
+    min_words: 150
+    max_words: 300
+    primary_usage: 1-2
+    secondary_usage: 2-4
+    density: 0.5-1%
+  facebook_caption:
+    label: Facebook Caption
+    min_words: 80
+    max_words: 200
+    primary_usage: '1'
+    secondary_usage: 1-2
+    density: 0.5%
+  instagram_caption:
+    label: Instagram Caption
+    min_words: 80
+    max_words: 150
+    primary_usage: '1'
+    secondary_usage: 1-2
+    density: 0.5%
+  linkedin_article:
+    label: LinkedIn Article
+    min_words: 800
+    max_words: 1500
+    primary_usage: 4-6
+    secondary_usage: 8-12
+    density: 1-1.5%
+  seo_pr:
+    label: 3rd-Party SEO Article / PR
+    min_words: 700
+    max_words: 1200
+    primary_usage: 5-8
+    secondary_usage: 10-15
+    density: 1.5-2%
+  website_blog:
+    label: Website Blog
+    min_words: 1000
+    max_words: 2000
+    primary_usage: 8-15
+    secondary_usage: 15-25
+    density: 1.5-2%
+  landing_page:
+    label: Website Landing / Service Page
+    min_words: 600
+    max_words: 1200
+    primary_usage: 5-10
+    secondary_usage: 8-15
+    density: 2-2.5%
+  homepage:
+    label: Homepage
+    min_words: 800
+    max_words: 1500
+    primary_usage: 6-10
+    secondary_usage: 10-15
+    density: 1.5-2%
