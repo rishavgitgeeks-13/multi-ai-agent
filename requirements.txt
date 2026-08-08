@@ -6,6 +6,7 @@ python-dotenv
 pydantic
 fastapi
 uvicorn[standard]
+PyYAML
 # Streamlit's MediaAwareGZipMiddleware is incompatible with Starlette 1.4+
 # (GZipResponder requires thread_minimum_size). Pin until Streamlit ships a fix.
 starlette>=1.3.1,<1.4.0
