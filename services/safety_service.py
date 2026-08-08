@@ -258,6 +258,7 @@ _SENSITIVE_TERMS = re.compile(
 )
 
 _WORD_COUNT_PATTERNS: List[re.Pattern[str]] = [
+    # "10 word blog", "10-word article", "exactly 800 words"
     re.compile(r"\b(?:exactly\s+)?(\d{1,5})\s*[\-]?\s*words?\b", re.I),
     re.compile(r"\b(?:word\s*count|length|limit)\s*(?:of|is|=|:)?\s*(\d{1,5})\b", re.I),
     re.compile(
@@ -266,6 +267,11 @@ _WORD_COUNT_PATTERNS: List[re.Pattern[str]] = [
     ),
     re.compile(r"\b(?:about|around|approx(?:imately)?|~)\s*(\d{1,5})\s*words?\b", re.I),
     re.compile(r"\bi\s+want\s+(?:a\s+)?(\d{1,5})\s*words?\b", re.I),
+    # Ranges: "700-800 words" / "700 to 800 words" → prefer upper bound later
+    re.compile(
+        r"\b(\d{1,5})\s*(?:-|–|—|to)\s*(\d{1,5})\s*words?\b",
+        re.I,
+    ),
 ]
 
 
@@ -512,15 +518,28 @@ class SafetyService:
         }
         for pat in _WORD_COUNT_PATTERNS:
             for match in pat.finditer(text):
-                try:
-                    n = int(match.group(1))
-                except (IndexError, ValueError):
+                groups = [g for g in match.groups() if g is not None]
+                if not groups:
                     continue
+                try:
+                    nums = [int(g) for g in groups]
+                except ValueError:
+                    continue
+                # Prefer upper bound for ranges (700-800 → 800)
+                n = max(nums) if len(nums) > 1 else nums[0]
                 if 1 <= n <= 50000:
-                    constraints["raw_length_mentions"].append(n)
+                    constraints["raw_length_mentions"].extend(nums)
                     if constraints["target_word_count"] is None:
                         constraints["target_word_count"] = n
-                        if re.search(rf"\bexactly\s+{n}\s*words?\b", text, re.I):
+                        if len(nums) > 1:
+                            constraints["target_word_count_min"] = min(nums)
+                            constraints["target_word_count_max"] = max(nums)
+                        # Exact / micro asks are strict; ranges keep the stated band
+                        if (
+                            re.search(rf"\bexactly\s+{n}\s*words?\b", text, re.I)
+                            or n <= 50
+                            or len(nums) > 1
+                        ):
                             constraints["word_count_flexible"] = False
         return constraints
 
