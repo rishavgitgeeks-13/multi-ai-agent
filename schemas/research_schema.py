@@ -81,6 +81,12 @@ class ResearchData(BaseModel):
     Appear in the citation section of the final content.
     """
 
+    incidents: List[str] = Field(default_factory=list)
+    """
+    Reported news incidents / case headlines (e.g. city + allegation + outlet).
+    Used when the brief asks for cases, not only national aggregate stats.
+    """
+
     def to_state_dict(self) -> Dict[str, Any]:
         """
         Serialize to the flat dict expected by ContentState["research_data"].
@@ -92,6 +98,7 @@ class ResearchData(BaseModel):
             "sources": [src.model_dump() for src in self.sources],
             "statistics": self.statistics,
             "citations": self.citations,
+            "incidents": self.incidents,
         }
 
     @classmethod
