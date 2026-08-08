@@ -111,17 +111,23 @@ def review_node(state: ContentState) -> ContentState:
     # Word-count adherence when user requested a target
     constraints = state.get("user_constraints") or {}
     target = constraints.get("target_word_count")
+    length_ok = True
     if target:
         actual = len(draft.split())
         flexible = constraints.get("word_count_flexible", True)
-        # Tight for short asks; ±15% for longer
-        if int(target) <= 50:
+        tmin = constraints.get("target_word_count_min")
+        tmax = constraints.get("target_word_count_max")
+        # Prefer explicit range from prompt (e.g. 700-800 words)
+        if tmin is not None and tmax is not None:
+            lo, hi = int(tmin), int(tmax)
+        elif int(target) <= 50:
             lo, hi = max(1, int(target) - 2), int(target) + 2
         elif flexible:
             lo, hi = int(target * 0.85), int(target * 1.15)
         else:
             lo, hi = int(target * 0.95), int(target * 1.05)
         if actual < lo or actual > hi:
+            length_ok = False
             review["issues"] = list(review.get("issues") or [])
             review["issues"].append(
                 f"Word count {actual} is outside the user-requested target "
@@ -133,7 +139,8 @@ def review_node(state: ContentState) -> ContentState:
                 review["rewrite_instruction"] = (
                     (review.get("rewrite_instruction") or "").strip()
                     + f"\nAdjust length to approximately {target} words "
-                    f"(current ~{actual}). Do not change the primary topic."
+                    f"(current ~{actual}). Do not expand into a long article. "
+                    f"Do not change the primary topic."
                 ).strip()
 
     # Topic fidelity reminder in rewrite instructions
@@ -149,15 +156,19 @@ def review_node(state: ContentState) -> ContentState:
     # ------------------------------------------------------------------
     word_count = len(draft.split())
     content_type = (strategy.get("content_type") or state.get("content_type") or "").lower()
-    min_words = (
-        settings.MIN_ARTICLE_WORDS
-        if content_type in ("blog", "article")
-        else 1
-    )
+    # Default article floor only when the user did NOT set a length.
+    if target:
+        min_words = max(1, int(target) // 2) if int(target) > 50 else 1
+    else:
+        min_words = (
+            settings.MIN_ARTICLE_WORDS
+            if content_type in ("blog", "article")
+            else 1
+        )
 
     if review["needs_revision"] and revision_count >= max_revisions:
         # Never force-pass empty / far-too-short content — mark FAILED instead.
-        if word_count < max(1, min_words // 4):
+        if word_count < max(1, min_words // 4 if not target else min_words):
             logger.error(
                 "Max revisions reached with unusable draft (%d words) — marking FAILED",
                 word_count,
@@ -177,6 +188,60 @@ def review_node(state: ContentState) -> ContentState:
             state["next_agent"] = "end"
             state["review"] = review
             return state
+
+        # Do not force-PASS when the user length ask is still violated.
+        if target and not length_ok:
+            logger.warning(
+                "Max revisions reached with length miss (target=%s, actual=%d) — keeping FAIL",
+                target,
+                word_count,
+            )
+            review["needs_revision"] = False
+            review["status"] = "FAIL"
+            review["feedback"] = list(review.get("feedback") or []) + [
+                f"Maximum revision limit ({max_revisions}) reached without hitting "
+                f"the requested ~{target}-word length (got {word_count})."
+            ]
+            state["workflow_status"] = "COMPLETED"
+            state["current_agent"] = "review"
+            state["next_agent"] = "end"
+            state["review"] = review
+            return state
+
+        # Comments: never force-PASS an off-format reply (pitch / incomplete / hashtags).
+        platform = (strategy.get("platform") or state.get("platform") or "").lower()
+        if content_type == "comment" or platform == "comment":
+            hard_issues = [
+                i
+                for i in (review.get("issues") or [])
+                if any(
+                    k in str(i).lower()
+                    for k in (
+                        "outreach",
+                        "sales",
+                        "hashtag",
+                        "incomplete",
+                        "cut off",
+                        "outside the requested",
+                        "too long",
+                    )
+                )
+            ]
+            if hard_issues:
+                logger.warning(
+                    "Max revisions reached on comment with format issues — keeping FAIL"
+                )
+                review["needs_revision"] = False
+                review["status"] = "FAIL"
+                review["feedback"] = list(review.get("feedback") or []) + [
+                    f"Maximum revision limit ({max_revisions}) reached; "
+                    "comment still off-format (not force-passed)."
+                ]
+                state["workflow_status"] = "COMPLETED"
+                state["current_agent"] = "review"
+                state["next_agent"] = "end"
+                state["review"] = review
+                return state
 
         logger.warning(
             "Max revision limit (%d) reached — forcing PASS with score %d",
