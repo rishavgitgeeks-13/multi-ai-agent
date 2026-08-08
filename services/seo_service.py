@@ -502,6 +502,21 @@ Rules:
             text,
             flags=re.IGNORECASE,
         ).strip()
+        # Length instructions are constraints, not topics/keywords
+        # ("10 word blog on ai" → "blog on ai").
+        cleaned = re.sub(
+            r"\b(?:exactly\s+|about\s+|around\s+|approx(?:imately)?\s+|~)?\d{1,5}\s*[\-]?\s*words?\b",
+            " ",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(
+            r"\b(?:word\s*count|length|limit)\s*(?:of|is|=|:)?\s*\d{1,5}\b",
+            " ",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" -,:;")
         return cleaned or text
 
     @staticmethod
@@ -511,6 +526,9 @@ Rules:
         if not kw:
             return True
         if kw == "brand" or kw.startswith("brand "):
+            return True
+        # Length meta leaked into keywords ("10 word ai blog", "100 words")
+        if re.search(r"\b\d{1,5}\s*[\-]?\s*words?\b", kw):
             return True
         if re.search(r"\bgets?\s+\w+\s+people\b", kw):
             return True
@@ -677,6 +695,17 @@ Rules:
                 continue
             seen.add(kw)
             seeds.append(KeywordCandidate(keyword=kw, category="secondary"))
+
+        # Fixed brand SEO kit (Excel) — seed with selected brand/primary/secondary.
+        selected = brand_context.get("seo_kit_selected") or {}
+        for raw in selected.get("brand_keywords") or []:
+            _add(str(raw), "primary")
+        for raw in selected.get("primary_keywords") or []:
+            _add(str(raw), "primary")
+        for raw in (selected.get("secondary_keywords") or []) + (
+            selected.get("service_keywords") or []
+        ):
+            _add(str(raw), "secondary")
 
         return seeds
 
@@ -1140,6 +1169,9 @@ Rules:
     ) -> SEOBlueprint:
         """Assemble the final SEO Blueprint from ranked keyword candidates."""
         primary, secondary = self._assign_keyword_slots(ranked, user_input)
+        primary, secondary = self._merge_kit_keywords(
+            primary, secondary, brand_context
+        )
 
         # Dominant intent = most frequent intent label among the top-10 keywords.
         top_intents = [c.search_intent for c in ranked[:10] if c.search_intent]
@@ -1165,6 +1197,56 @@ Rules:
             meta_description=meta_description,
             slug=slug,
         )
+
+    @staticmethod
+    def _merge_kit_keywords(
+        primary: List[str],
+        secondary: List[str],
+        brand_context: Dict,
+    ) -> tuple:
+        """
+        Ensure Excel-kit selected keywords appear in the final blueprint.
+        Kit keywords lead; topic keywords fill remaining slots.
+        """
+        selected = (brand_context or {}).get("seo_kit_selected") or {}
+        if not selected:
+            return primary, secondary
+
+        def _dedupe(items: List[str], limit: int) -> List[str]:
+            out: List[str] = []
+            seen = set()
+            for raw in items:
+                kw = str(raw or "").strip()
+                if not kw:
+                    continue
+                key = kw.lower()
+                if key in seen or SEOService._is_polluted_keyword(kw):
+                    continue
+                seen.add(key)
+                out.append(kw)
+                if len(out) >= limit:
+                    break
+            return out
+
+        kit_primary = list(selected.get("brand_keywords") or []) + list(
+            selected.get("primary_keywords") or []
+        )
+        kit_secondary = list(selected.get("secondary_keywords") or []) + list(
+            selected.get("service_keywords") or []
+        )
+
+        merged_primary = _dedupe(kit_primary + list(primary or []), limit=5)
+        # Keep secondaries from overlapping primaries
+        primary_keys = {p.lower() for p in merged_primary}
+        merged_secondary = _dedupe(
+            [
+                s
+                for s in (kit_secondary + list(secondary or []))
+                if str(s).strip().lower() not in primary_keys
+            ],
+            limit=10,
+        )
+        return merged_primary, merged_secondary
 
     def _generate_meta_fields(
         self,
