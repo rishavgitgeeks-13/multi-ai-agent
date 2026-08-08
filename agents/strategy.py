@@ -55,14 +55,45 @@ def strategy_node(state: ContentState) -> ContentState:
     content_type = state.get("content_type", "article")
     language = state.get("language", "English")
 
-    # Honour user word-count when building outline scale
+    # Honour user word-count when building outline scale; else kit platform band
     constraints = state.get("user_constraints") or {}
     target_words = constraints.get("target_word_count")
+    platform_profile = {}
+    if not target_words:
+        try:
+            from brands.seo_kit_loader import (
+                get_platform_profile,
+                suggested_word_count,
+            )
 
-    # Hashtags for every content type except email
-    hashtag_platform = "email" if str(content_type).lower() == "email" or str(
-        platform or ""
-    ).lower() == "email" else (platform or content_type or "website")
+            platform_profile = get_platform_profile(content_type, platform)
+            kit_n = suggested_word_count(content_type, platform)
+            if kit_n:
+                target_words = int(kit_n)
+        except Exception:
+            platform_profile = {}
+
+    # Refresh kit keyword selection with the locked primary topic (more accurate).
+    try:
+        from brands.seo_kit_loader import select_keywords_for_brief
+
+        kit = brand.get("seo_kit") or {}
+        if kit:
+            brand["seo_kit_selected"] = select_keywords_for_brief(
+                kit,
+                user_input=state.get("user_input") or user_input,
+                primary_topic=state.get("primary_topic") or user_input,
+            )
+    except Exception:
+        pass
+
+    # Hashtags for every content type except email and social comments
+    _plat = str(platform or "").lower()
+    _ct = str(content_type).lower()
+    if _ct in ("email", "comment") or _plat in ("email", "comment"):
+        hashtag_platform = "email"  # HashtagService returns [] for email/comment
+    else:
+        hashtag_platform = platform or content_type or "website"
 
     # ------------------------------------------------------------------
     # 1 — SEO Service
@@ -122,6 +153,21 @@ def strategy_node(state: ContentState) -> ContentState:
             exc,
         )
         hashtags = []
+
+    # Merge any hashtags the user listed in Additional Instructions
+    try:
+        import re as _re
+
+        instr = state.get("additional_instructions") or ""
+        user_tags = _re.findall(r"#\w+", instr)
+        if user_tags and hashtag_platform not in ("email", "comment"):
+            seen = {h.lower() for h in hashtags}
+            for tag in user_tags:
+                if tag.lower() not in seen:
+                    hashtags.append(tag)
+                    seen.add(tag.lower())
+    except Exception:
+        pass
 
     # ------------------------------------------------------------------
     # 3 — Citation Service
@@ -258,6 +304,9 @@ def strategy_node(state: ContentState) -> ContentState:
         "word_count_flexible": bool(
             (constraints or {}).get("word_count_flexible", True)
         ),
+        # Brand SEO kit guidance (hashtags/keywords/length bands from Excel)
+        "seo_kit_selected": brand.get("seo_kit_selected") or {},
+        "platform_profile": platform_profile or {},
     }
 
     # ------------------------------------------------------------------
