@@ -112,10 +112,29 @@ class TavilySearch:
 
         results = []
 
+        # Synthesized answer often carries attributed figures — expose for research.
+        answer = response.get("answer")
+        if include_answer and isinstance(answer, str) and answer.strip():
+            results.append(
+                {
+                    "title": "Tavily research summary",
+                    "content": answer.strip()[:2000],
+                    "raw_content": answer.strip()[:_MAX_RAW_CONTENT_CHARS],
+                    "url": "",
+                    "score": 0.8,
+                }
+            )
+
         for item in response.get("results", []):
             raw: Optional[str] = item.get("raw_content")
-            if raw and len(raw) > _MAX_RAW_CONTENT_CHARS:
-                raw = raw[:_MAX_RAW_CONTENT_CHARS]
+            # Allow deeper bodies when advanced scrape is requested
+            max_raw = (
+                _MAX_RAW_CONTENT_CHARS * 2
+                if include_raw_content
+                else _MAX_RAW_CONTENT_CHARS
+            )
+            if raw and len(raw) > max_raw:
+                raw = raw[:max_raw]
 
             results.append(
                 {
