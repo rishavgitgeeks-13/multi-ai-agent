@@ -98,11 +98,20 @@ class JSONBuilder:
             content.get("content_type") or strategy.get("content_type") or "article"
         ).lower()
 
-        # Append hashtags for every content type except email (if not already present)
+        # Append hashtags for every content type except email (if not already present).
+        # Skip embedding into micro-length bodies so the word budget stays intact;
+        # hashtags remain available on the payload under final_output.hashtags.
+        try:
+            target_n = int(strategy.get("target_word_count") or 0)
+        except (TypeError, ValueError):
+            target_n = 0
+        micro = target_n > 0 and target_n <= 75
+
         if (
             hashtags
-            and content_type != "email"
-            and platform != "email"
+            and content_type not in ("email", "comment")
+            and platform not in ("email", "comment")
+            and not micro
             and not any(tag.lower() in markdown.lower() for tag in hashtags[:2])
         ):
             tag_line = " ".join(hashtags)
