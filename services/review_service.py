@@ -193,6 +193,16 @@ class ReviewService:
                 "revision_number": revision_count + 1,
             }
 
+        content_type_early = str(strategy.get("content_type") or "").lower()
+        platform_early = str(strategy.get("platform") or "").lower()
+        if content_type_early == "comment" or platform_early == "comment":
+            return self._evaluate_comment(
+                draft=draft,
+                strategy=strategy,
+                revision_count=revision_count,
+                primary_topic=brief,
+            )
+
         # Rule-based pre-checks (fast, no LLM)
         pre_check_issues = self._run_pre_checks(draft, strategy)
         if brief:
@@ -317,8 +327,27 @@ class ReviewService:
         word_count = len(self._strip_markdown(draft).split())
         content_type = strategy.get("content_type", "article")
 
-        # Word count check (skip for short-form types)
-        if content_type in ("blog", "article"):
+        # Word count: user target wins over default article floors.
+        user_target = strategy.get("target_word_count")
+        try:
+            user_target_n = int(user_target) if user_target is not None else None
+        except (TypeError, ValueError):
+            user_target_n = None
+
+        if user_target_n and 1 <= user_target_n <= 50000:
+            flexible = bool(strategy.get("word_count_flexible", True))
+            if user_target_n <= 50:
+                lo, hi = max(1, user_target_n - 2), user_target_n + 2
+            elif flexible:
+                lo, hi = int(user_target_n * 0.85), int(user_target_n * 1.15)
+            else:
+                lo, hi = int(user_target_n * 0.95), int(user_target_n * 1.05)
+            if word_count < lo or word_count > hi:
+                issues.append(
+                    f"Content length {word_count} words is outside the "
+                    f"user-requested ~{user_target_n} words (acceptable {lo}-{hi})."
+                )
+        elif content_type in ("blog", "article"):
             if word_count < settings.MIN_ARTICLE_WORDS:
                 issues.append(
                     f"Content too short: {word_count} words "
@@ -329,6 +358,9 @@ class ReviewService:
                     f"Content too long: {word_count} words "
                     f"(maximum {settings.MAX_ARTICLE_WORDS})."
                 )
+
+        # Micro length asks: skip long-form SEO/heading rules (they force expansion).
+        micro_request = bool(user_target_n and user_target_n <= 75)
 
         # Primary / secondary SEO checks (fair matching — not brittle exact-only)
         seo = strategy.get("seo", {}) or {}
@@ -352,7 +384,7 @@ class ReviewService:
         ]
         draft_lower = draft.lower()
 
-        if primary_keywords:
+        if primary_keywords and not micro_request:
             lead = primary_keywords[0]
             if not self._keyword_covered(lead, draft_lower):
                 issues.append(
@@ -380,7 +412,11 @@ class ReviewService:
             kw for kw in secondary_keywords[:6]
             if len(kw.split()) <= 5
         ]
-        if placeable_secondary and content_type in ("blog", "article"):
+        if (
+            placeable_secondary
+            and content_type in ("blog", "article")
+            and not micro_request
+        ):
             hit = any(
                 self._keyword_covered(kw, draft_lower)
                 for kw in placeable_secondary
@@ -392,7 +428,12 @@ class ReviewService:
                 )
 
         # Soft density band for lead primary (warn only).
-        if primary_keywords and content_type in ("blog", "article") and word_count > 0:
+        if (
+            primary_keywords
+            and content_type in ("blog", "article")
+            and word_count > 0
+            and not micro_request
+        ):
             lead = primary_keywords[0].lower()
             escaped = re.escape(lead)
             count = len(re.findall(r"\b" + escaped + r"\b", draft_lower))
@@ -403,21 +444,22 @@ class ReviewService:
                     f"({density_pct:.1f}% density; aim for ~0.5–2.5%)."
                 )
 
-        # Heading structure check
+        # Heading structure check (skip for micro asks)
         h2_count = len(re.findall(r"^##\s+", draft, re.MULTILINE))
-        if content_type in ("blog", "article") and h2_count < 2:
+        if content_type in ("blog", "article") and h2_count < 2 and not micro_request:
             issues.append(
                 f"Insufficient headings: found {h2_count} H2 headings (minimum 2)."
             )
 
-        # CTA check
-        cta = strategy.get("cta") or brand_context_from_strategy(strategy)
-        if cta and cta.lower() not in draft_lower:
-            issues.append("CTA text not found in the content.")
+        # CTA check (skip for micro — full CTA often won't fit the budget)
+        if not micro_request:
+            cta = strategy.get("cta") or brand_context_from_strategy(strategy)
+            if cta and cta.lower() not in draft_lower:
+                issues.append("CTA text not found in the content.")
 
         # AI-tell phrase check (natural voice)
         found_tells = self._detect_ai_tells(draft_lower)
-        if found_tells:
+        if found_tells and not micro_request:
             issues.append(
                 "Reads as AI-generated — remove/replace clichéd phrases: "
                 + ", ".join(f'"{p}"' for p in found_tells[:6])
@@ -425,7 +467,7 @@ class ReviewService:
             )
 
         # Sentence-rhythm uniformity (robotic cadence) for long-form
-        if content_type in ("blog", "article"):
+        if content_type in ("blog", "article") and not micro_request:
             uniformity = self._sentence_length_uniformity(self._strip_markdown(draft))
             if uniformity is not None and uniformity < 0.28:
                 issues.append(
@@ -717,27 +759,53 @@ Return ONLY this JSON object:
         """
         brief_core = (brief or "").split("|")[0].strip().lower()
         draft_l = (draft or "").lower()
-        if len(brief_core) < 24:
+        # Short briefs still get a fidelity check (e.g. "AI automation blog")
+        if len(brief_core) < 10:
             return ""
 
         stop = {
             "write", "article", "about", "the", "and", "for", "with", "from",
             "that", "this", "should", "have", "been", "where", "between",
             "add", "angle", "how", "can", "help", "such", "content", "please",
+            "blog", "post", "make", "create", "generate", "want", "need",
+            "likho", "bahut", "accha", "jo", "yeh", "very", "good",
         }
         tokens = [
             w
-            for w in re.findall(r"[a-z0-9]{4,}", brief_core)
+            for w in re.findall(r"[a-z0-9]{3,}", brief_core)
             if w not in stop
         ]
-        if len(tokens) < 4:
+        if len(tokens) < 2:
             return ""
-        hits = sum(1 for t in tokens[:12] if t in draft_l)
-        if hits < max(2, len(tokens[:12]) // 3):
+        sample = tokens[:12]
+        hits = sum(1 for t in sample if t in draft_l)
+        # Require roughly 1/3 of brief tokens (min 1 for micro briefs)
+        need = max(1, len(sample) // 3)
+        if hits < need:
             return (
                 "Draft appears off-brief vs the user primary topic — rewrite to match "
                 "the requested subject, geography, and data asks (do not substitute a "
-                "generic screening essay)."
+                "generic brand pitch or screening essay)."
+            )
+        # Brand-pitch hijack: brief is not about sales but draft is mostly CTA/leads
+        pitchy = sum(
+            1
+            for p in (
+                "book a",
+                "discovery call",
+                "lead leakage",
+                "schedule a demo",
+                "measurable roi",
+                "our approach could",
+            )
+            if p in draft_l
+        )
+        if pitchy >= 2 and not any(
+            p in brief_core for p in ("cta", "call", "demo", "sales", "lead")
+        ):
+            return (
+                "Draft drifted into a brand sales pitch instead of answering the user "
+                "brief — rewrite to the requested subject first; keep CTA soft/optional."
             )
         if re.search(r"\bindia\b", brief_core) and not re.search(
             r"\b(india|indian|delhi|ncr|gurgaon|mumbai|pocso|ncrb)\b",
@@ -877,6 +945,137 @@ Return ONLY this JSON object:
         except (json.JSONDecodeError, ValueError) as exc:
             logger.error("Review JSON parse error: %s | raw=%s", exc, cleaned[:300])
             return self._fallback_evaluation([])
+
+    def _evaluate_comment(
+        self,
+        draft: str,
+        strategy: Dict,
+        revision_count: int,
+        primary_topic: str = "",
+    ) -> Dict:
+        """
+        Lightweight review for social comments/replies.
+        Does NOT require SEO keywords, research stats, brand CTA, or article structure.
+        """
+        text = (draft or "").strip()
+        words = text.split()
+        word_count = len(words)
+        issues: List[str] = []
+        feedback: List[str] = []
+
+        target = strategy.get("target_word_count")
+        try:
+            target_n = int(target) if target is not None else None
+        except (TypeError, ValueError):
+            target_n = None
+
+        if target_n and target_n <= 50:
+            lo, hi = max(1, target_n - 2), target_n + 2
+            if word_count < lo or word_count > hi:
+                issues.append(
+                    f"Comment length {word_count} words is outside the requested "
+                    f"~{target_n} words (acceptable {lo}-{hi})."
+                )
+        elif word_count > 120:
+            issues.append(
+                f"Comment is too long ({word_count} words). Keep replies short."
+            )
+
+        if re.search(r"(?:#\w+\s*){2,}|^Hashtags:", text, re.I | re.M):
+            issues.append("Comments must not include hashtags.")
+
+        # Sales / outreach pitch is off-brief for a thank-you comment
+        pitch_hits = 0
+        for phrase in (
+            "book a",
+            "discovery call",
+            "schedule a",
+            "lead leakage",
+            "measurable roi",
+            "our approach",
+            "i would love to hear",
+        ):
+            if phrase in text.lower():
+                pitch_hits += 1
+        if pitch_hits >= 2:
+            issues.append(
+                "Draft reads like outreach/sales, not a natural social comment reply."
+            )
+
+        last_word = re.sub(r"[^\w']+$", "", words[-1]).lower() if words else ""
+        dangling = {
+            "and", "or", "to", "for", "the", "a", "an", "of", "with", "our",
+            "if", "in", "on", "at", "by", "from", "as", "than", "that", "this",
+        }
+        if text.rstrip().endswith(",") or last_word in dangling:
+            issues.append("Sentence appears incomplete or cut off.")
+
+        brief_l = (primary_topic or "").lower()
+        thanks_intent = any(
+            x in brief_l
+            for x in ("good", "great", "thanks", "thank", "reply", "feedback", "liked")
+        )
+        if thanks_intent and not any(
+            x in text.lower()
+            for x in ("thank", "glad", "appreciate", "happy", "means a lot", "kind")
+        ):
+            # soft — only flag if also pitching
+            if pitch_hits:
+                issues.append(
+                    "Comment should acknowledge the positive feedback naturally."
+                )
+
+        # Score: comments are short — high score when clean and on-length
+        if not issues and 1 <= word_count <= 120:
+            dim = {
+                "content_quality": 92,
+                "seo_compliance": 90,  # N/A for comments — do not punish
+                "brand_alignment": 88,
+                "structure": 90,
+                "factual_grounding": 90,  # N/A — do not require stats
+                "natural_voice": 90,
+                "cta_effectiveness": 90,  # N/A — do not require brand CTA
+            }
+            feedback.append("Natural comment reply; length and intent look good.")
+            score = self._calculate_score(dim)
+            return {
+                "score": score,
+                "status": "PASS",
+                "needs_revision": False,
+                "feedback": feedback,
+                "issues": [],
+                "rewrite_instruction": "",
+                "dimension_scores": dim,
+                "revision_number": revision_count + 1,
+            }
+
+        dim = {
+            "content_quality": 55 if issues else 80,
+            "seo_compliance": 85,
+            "brand_alignment": 60 if pitch_hits else 80,
+            "structure": 70,
+            "factual_grounding": 85,
+            "natural_voice": 65 if any("incomplete" in i.lower() for i in issues) else 80,
+            "cta_effectiveness": 85,
+        }
+        score = self._calculate_score(dim)
+        rewrite = (
+            "Rewrite as a short natural social comment reply only. "
+            "Match the user's intent (e.g. thank them for saying the article is good). "
+            "No hashtags, no SEO keywords, no research stats, no hard CTA / sales pitch. "
+        )
+        if target_n:
+            rewrite += f"Use approximately {target_n} words. "
+        return {
+            "score": score,
+            "status": "FAIL",
+            "needs_revision": True,
+            "feedback": feedback,
+            "issues": issues,
+            "rewrite_instruction": rewrite.strip(),
+            "dimension_scores": dim,
+            "revision_number": revision_count + 1,
+        }
 
     def _fallback_evaluation(self, pre_check_issues: List[str]) -> Dict:
         """Return a conservative evaluation when the LLM call fails — never auto-PASS."""
