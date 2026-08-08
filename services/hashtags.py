@@ -44,7 +44,7 @@ PLATFORM_LIMITS: Dict[str, int] = {
     "twitter": 3,
     "facebook": 8,
     "reddit": 5,
-    "comment": 5,
+    "comment": 0,   # comments are replies — never hashtag blocks
     "carousel": 10,
     "website": 8,
     "blog": 8,
@@ -94,11 +94,36 @@ class HashtagService:
 
         platform_key = platform.lower().strip()
 
-        # Email has no use for hashtags — return early
-        if platform_key == "email":
+        # Email / social comments have no use for hashtags — return early
+        if platform_key in ("email", "comment"):
             return []
 
         cap = max_hashtags or PLATFORM_LIMITS.get(platform_key, DEFAULT_LIMIT)
+        if cap <= 0:
+            return []
+
+        # Prefer brand SEO kit (mandatory + topic-rotated secondary) when present.
+        kit = brand_context.get("seo_kit") or {}
+        if kit:
+            try:
+                from brands.seo_kit_loader import build_hashtags
+
+                kit_tags = build_hashtags(
+                    kit,
+                    user_input=user_input,
+                    platform=platform_key,
+                    cap=cap,
+                )
+                if kit_tags:
+                    logger.info(
+                        "HashtagService complete | platform=%s | kit_count=%d",
+                        platform_key,
+                        len(kit_tags),
+                    )
+                    return kit_tags
+            except Exception as exc:
+                logger.warning("SEO kit hashtags failed, falling back: %s", exc)
+
         seed_keywords = self._build_seed_keywords(seo_blueprint, brand_context)
 
         raw_hashtags = self._fallback_hashtags(seed_keywords, cap)
