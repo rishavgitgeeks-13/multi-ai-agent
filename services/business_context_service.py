@@ -88,7 +88,17 @@ class BusinessContextService:
                 platform = "facebook"
             elif "reddit" in text:
                 platform = "reddit"
-            elif any(x in text for x in ["comment reply", "social comment", "reply comment"]):
+            elif any(
+                x in text
+                for x in [
+                    "comment reply",
+                    "social comment",
+                    "reply comment",
+                    "comment on this",
+                    "write a comment",
+                    "post a comment",
+                ]
+            ):
                 platform = "comment"
 
             return {
@@ -186,13 +196,23 @@ class BusinessContextService:
             user_input
         )
 
-        return {
+        context = {
             # Flatten brand fields so Writer/Review/SEO/Research can read
             # tone, cta, display_name, namespace, etc. at the top level.
             **cfg,
             "brand_config": cfg,
             **workflow_context,
         }
+        # Attach fixed hashtag/keyword kit from brands/seo_kits.yaml.
+        # Soft-fail: missing kit must not break brand resolution.
+        try:
+            from brands.seo_kit_loader import attach_kit_to_brand_context
+
+            context = attach_kit_to_brand_context(context, user_input=user_input)
+        except Exception:
+            context.setdefault("seo_kit", {})
+            context.setdefault("seo_kit_selected", {})
+        return context
 
     def resolve(
         self,
