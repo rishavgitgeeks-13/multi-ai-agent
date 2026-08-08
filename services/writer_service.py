@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 # Content-type configuration
 # ---------------------------------------------------------------------------
 
-SHORT_FORM_TYPES = {"linkedin", "email", "carousel"}
+SHORT_FORM_TYPES = {"linkedin", "email", "carousel", "comment"}
 LONG_FORM_TYPES = {"blog", "article"}
 
 WORD_COUNT_TARGETS: Dict[str, int] = {
@@ -51,6 +51,7 @@ WORD_COUNT_TARGETS: Dict[str, int] = {
     "linkedin": 600,
     "email": 400,
     "carousel": 800,
+    "comment": 60,
 }
 
 # Research stats injected per section prompt to ground the LLM
@@ -171,6 +172,49 @@ AWARENESS-FIRST PACING (mandatory — write an awareness piece, not a sales broc
             "- Prefer .gov / major news citations over Facebook posts, social videos, or thin blogs."
         )
 
+    @staticmethod
+    def _brief_first_rules(primary_topic: str = "") -> str:
+        """
+        ChatGPT/Claude-style priority: user intent beats brand pitch / SEO kit defaults.
+        """
+        topic = (primary_topic or "").strip()
+        topic_line = f"\nUSER BRIEF TO SERVE:\n{topic}\n" if topic else ""
+        return f"""
+BRIEF-FIRST QUALITY BAR (mandatory — write like a top assistant, not a brand brochure):
+{topic_line}- Answer the user's actual ask first. Every section must earn its place against that brief.
+- Do NOT substitute a generic brand essay, screening pitch, or unrelated SEO template.
+- If brand CTA / keywords conflict with the brief, prefer the brief; weave brand only when it helps the reader.
+- Prefer concrete, specific, useful writing over vague filler. Match the requested format (blog, post, comment, email).
+- Keep geography, audience, year range, and data asks from the brief — never invent a different market.
+- If research lacks an exact figure the brief asked for, say so honestly; never pad with off-topic stats.
+"""
+
+    @staticmethod
+    def _cta_is_hard_required(
+        content_type: str,
+        primary_topic: str = "",
+        awareness_first: bool = False,
+        objective: str = "",
+    ) -> bool:
+        """Hard verbatim CTA only for commercial long-form / lead-gen intents."""
+        ct = (content_type or "").lower()
+        if ct in ("comment", "carousel"):
+            return False
+        obj = (objective or "").lower()
+        if obj in ("leads", "conversion", "sales"):
+            return True
+        topic = (primary_topic or "").lower()
+        soft_signals = (
+            "explain", "what is", "what are", "guide", "how to", "tips",
+            "thank", "reply", "feedback", "comment", "overview", "meaning of",
+        )
+        if any(s in topic for s in soft_signals):
+            return False
+        if awareness_first and obj in ("", "seo", "authority", "engagement", "awareness"):
+            # Soft CTA in conclusion still OK, but not a hard-sell checklist item
+            return False
+        return ct in ("blog", "article", "email", "linkedin")
+
     # Meta / workflow phrases that must never be pasted into published copy.
     _LEAKY_KEYWORD_RE = re.compile(
         r"("
@@ -219,6 +263,9 @@ AWARENESS-FIRST PACING (mandatory — write an awareness piece, not a sales broc
             re.I,
         ):
             return True
+        # Length instructions must never become SEO keywords ("10 word ai blog")
+        if re.search(r"\b\d{1,5}\s*[\-]?\s*words?\b", kw, re.I):
+            return True
         return False
 
     @classmethod
@@ -238,21 +285,26 @@ AWARENESS-FIRST PACING (mandatory — write an awareness piece, not a sales broc
     @classmethod
     def _format_editorial_intent(cls, additional_instructions: str) -> str:
         """
-        Present extra guidance as intent only so the model does not paste it
-        into the draft (root cause of 'linkedin announcing…' style leaks).
+        Present extra guidance as hard editorial requirements.
+        Do not paste the instruction text into the draft; apply it.
         """
         text = (additional_instructions or "").strip()
         if not text:
             return ""
         # Cap size so huge instruction dumps are less likely to be echoed.
-        if len(text) > 1200:
-            text = text[:1200].rstrip() + "…"
+        if len(text) > 2000:
+            text = text[:2000].rstrip() + "…"
         return (
-            "\nEDITORIAL INTENT (follow the meaning only — "
-            "NEVER copy, quote, or paraphrase this block into the published draft; "
-            "never mention platform/format labels like 'LinkedIn announcing', "
-            "'LINKEDIN FORMAT', 'SEO REQUIREMENTS', or campaign-type boilerplate):\n"
+            "\nADDITIONAL USER REQUIREMENTS (HARD — apply all of these in the draft):\n"
             f"{text}\n"
+            "Rules for this block:\n"
+            "- If keyword density / primary-secondary usage is specified, hit those targets "
+            "naturally (do not stuff awkwardly).\n"
+            "- If hashtags are listed, include them at the end of the piece "
+            "(except email / social comment formats).\n"
+            "- Honour tone, structure, CTA, length, and any other constraints stated above.\n"
+            "- NEVER copy this instruction block verbatim into the published draft; "
+            "never mention labels like 'LINKEDIN FORMAT' or 'SEO REQUIREMENTS'.\n"
         )
 
     @staticmethod
@@ -311,11 +363,15 @@ AWARENESS-FIRST PACING (mandatory — write an awareness piece, not a sales broc
             or "website"
         )
 
+        topic_for_outline = (
+            primary_topic or strategy.get("primary_topic") or user_input or ""
+        ).strip()
         outline = self._resolve_outline(
             strategy=strategy,
             brand_context=brand_context,
             user_input=user_input,
             content_type=content_type,
+            primary_topic=topic_for_outline,
         )
 
         research_ctx = self._build_research_context(research_data)
@@ -326,9 +382,17 @@ AWARENESS-FIRST PACING (mandatory — write an awareness piece, not a sales broc
         secondary_keywords = self._filter_placeable_keywords(secondary_keywords, limit=8)
         target_words = self._resolve_target_words(content_type, strategy)
         topic_lock = (primary_topic or strategy.get("primary_topic") or user_input or "").strip()
+        # User-asked micro length must never go through the long-form article pipeline
+        # (that path forces outlines, SEO sections, and 1200+ word habits).
+        micro = target_words <= 75
 
         # On revision: surgically edit the existing draft instead of regenerating.
-        if rewrite_instruction and previous_draft.strip() and content_type in LONG_FORM_TYPES:
+        if (
+            rewrite_instruction
+            and previous_draft.strip()
+            and content_type in LONG_FORM_TYPES
+            and not micro
+        ):
             draft = self._revise_long_form(
                 previous_draft=previous_draft,
                 outline=outline,
@@ -337,6 +401,19 @@ AWARENESS-FIRST PACING (mandatory — write an awareness piece, not a sales broc
                 rewrite_instruction=rewrite_instruction,
                 primary_keywords=primary_keywords,
                 secondary_keywords=secondary_keywords,
+                primary_topic=topic_lock,
+                objective=str(strategy.get("objective") or ""),
+            )
+        elif micro:
+            draft = self._write_micro_form(
+                outline=outline,
+                content_type=content_type,
+                rewrite_instruction=rewrite_instruction,
+                primary_keywords=primary_keywords,
+                target_words=target_words,
+                primary_topic=topic_lock,
+                additional_instructions=additional_instructions,
+                user_input=user_input,
             )
         elif content_type in SHORT_FORM_TYPES:
             draft = self._write_short_form(
@@ -362,6 +439,7 @@ AWARENESS-FIRST PACING (mandatory — write an awareness piece, not a sales broc
                 target_words=target_words,
                 primary_topic=topic_lock,
                 additional_instructions=additional_instructions,
+                objective=str(strategy.get("objective") or ""),
             )
 
         # Never keep an empty model response — retry once, then fall back to previous draft.
@@ -370,7 +448,19 @@ AWARENESS-FIRST PACING (mandatory — write an awareness piece, not a sales broc
                 "Writer returned empty draft — retrying once | content_type=%s",
                 content_type,
             )
-            if content_type in SHORT_FORM_TYPES:
+            if micro:
+                draft = self._write_micro_form(
+                    outline=outline,
+                    content_type=content_type,
+                    rewrite_instruction=rewrite_instruction
+                    or "Return only the requested word count. Do not return empty output.",
+                    primary_keywords=primary_keywords,
+                    target_words=target_words,
+                    primary_topic=topic_lock,
+                    additional_instructions=additional_instructions,
+                    user_input=user_input,
+                )
+            elif content_type in SHORT_FORM_TYPES:
                 draft = self._write_short_form(
                     outline=outline,
                     research_ctx=research_ctx,
@@ -397,6 +487,7 @@ AWARENESS-FIRST PACING (mandatory — write an awareness piece, not a sales broc
                     target_words=target_words,
                     primary_topic=topic_lock,
                     additional_instructions=additional_instructions,
+                    objective=str(strategy.get("objective") or ""),
                 )
 
         if not (draft or "").strip() and previous_draft.strip():
@@ -407,12 +498,18 @@ AWARENESS-FIRST PACING (mandatory — write an awareness piece, not a sales broc
             draft = previous_draft
 
         # Deterministic quality boost: ensure attributed research stats are present.
-        if content_type in LONG_FORM_TYPES and target_words >= 400 and (draft or "").strip():
+        if (
+            content_type in LONG_FORM_TYPES
+            and target_words >= 400
+            and not micro
+            and (draft or "").strip()
+        ):
             draft = self._enrich_factual_grounding(
                 draft=draft,
                 research_ctx=research_ctx,
                 outline=outline,
                 secondary_keywords=secondary_keywords,
+                primary_topic=topic_lock,
             )
 
         # Strip common AI-cliché openers that models still insert despite prompts.
@@ -421,6 +518,10 @@ AWARENESS-FIRST PACING (mandatory — write an awareness piece, not a sales broc
         from services.text_cleanup import strip_all_dashes
 
         draft = strip_all_dashes(draft)
+
+        # Hard length guard for micro asks (models often pad after the first line).
+        if micro and (draft or "").strip():
+            draft = self._enforce_micro_word_count(draft, target_words)
 
         logger.info(
             "WriterService complete | content_type=%s | words=%d | target=%s",
@@ -438,7 +539,7 @@ AWARENESS-FIRST PACING (mandatory — write an awareness piece, not a sales broc
 
     @staticmethod
     def _resolve_target_words(content_type: str, strategy: Dict) -> int:
-        """Prefer user-requested word count; else content-type default."""
+        """Prefer user-requested word count; else brand kit band; else type default."""
         user_target = strategy.get("target_word_count")
         if user_target is not None:
             try:
@@ -447,6 +548,18 @@ AWARENESS-FIRST PACING (mandatory — write an awareness piece, not a sales broc
                     return n
             except (TypeError, ValueError):
                 pass
+        # Brand SEO kit platform band (Excel) when user did not specify length
+        try:
+            from brands.seo_kit_loader import suggested_word_count
+
+            kit_n = suggested_word_count(
+                content_type=content_type,
+                platform=str(strategy.get("platform") or "website"),
+            )
+            if kit_n and 1 <= int(kit_n) <= 50000:
+                return int(kit_n)
+        except Exception:
+            pass
         return WORD_COUNT_TARGETS.get(content_type, 1800)
 
     # ------------------------------------------------------------------
@@ -476,6 +589,7 @@ AWARENESS-FIRST PACING (mandatory — write an awareness piece, not a sales broc
         brand_context: Dict,
         user_input: str,
         content_type: str,
+        primary_topic: str = "",
     ) -> ContentOutline:
         """Use the strategy outline when present; otherwise generate one via LLM."""
         existing = strategy.get("outline", [])
@@ -490,6 +604,7 @@ AWARENESS-FIRST PACING (mandatory — write an awareness piece, not a sales broc
             strategy=strategy,
             brand_context=brand_context,
             content_type=content_type,
+            primary_topic=primary_topic,
         )
 
     @staticmethod
@@ -551,10 +666,34 @@ AWARENESS-FIRST PACING (mandatory — write an awareness piece, not a sales broc
         strategy: Dict,
         brand_context: Dict,
         content_type: str,
+        primary_topic: str = "",
     ) -> ContentOutline:
         """Generate a full ContentOutline using the OpenAI model."""
-        target_words = WORD_COUNT_TARGETS.get(content_type, 1800)
-        n_sections = "2–4" if content_type in SHORT_FORM_TYPES else "4–7"
+        target_words = self._resolve_target_words(content_type, strategy)
+        topic_lock = (
+            primary_topic
+            or strategy.get("primary_topic")
+            or user_input
+            or "topic"
+        ).strip()
+        if target_words <= 75:
+            # Micro pieces: no multi-section outline (avoids expanding to a full article).
+            return ContentOutline(
+                title=topic_lock[:80],
+                content_angle="concise insight",
+                audience=self._resolve_audience(strategy, brand_context),
+                tone=strategy.get("tone") or brand_context.get("tone") or "professional",
+                cta=strategy.get("cta") or brand_context.get("cta") or "",
+                sections=[],
+                brand_name=self._brand_display_name(brand_context),
+                awareness_first=self._is_awareness_first(brand_context),
+                font=str(brand_context.get("font") or "").strip(),
+            )
+        n_sections = (
+            "1–2"
+            if target_words < 400
+            else ("2–4" if content_type in SHORT_FORM_TYPES else "4–7")
+        )
 
         audience_str = self._resolve_audience(strategy, brand_context)
         tone = strategy.get("tone") or brand_context.get("tone") or "professional"
@@ -587,19 +726,25 @@ AWARENESS-FIRST PACING (mandatory — write an awareness piece, not a sales broc
 """
         else:
             awareness_outline_rules = """
-- Sections flow: problem → solution → proof → CTA
+- Sections flow: answer the user brief → supporting depth → practical takeaways → soft close
+- Do NOT force a sales CTA section when the brief is informational
 """
 
         keyword_assign_rule = (
             "- Do NOT assign secondary keywords to sections; keep keywords empty or use at most one primary phrase"
             if content_type in SHORT_FORM_TYPES
             else (
-                "- At least one H2 heading should include a primary or secondary keyword\n"
-                "- Assign each section 1 primary-or-secondary keyword in \"keywords\" (do not invent new ones)"
+                "- At least one H2 heading should include a primary or secondary keyword "
+                "ONLY when that keyword still matches the user brief\n"
+                "- Assign each section 1 primary-or-secondary keyword in \"keywords\" "
+                "(skip keywords that conflict with the brief; do not invent new ones)"
             )
         )
 
         prompt = f"""Create a detailed content outline for a {content_type}.
+
+PRIMARY TOPIC LOCK (outline must serve this — not a brand substitute essay):
+{topic_lock}
 
 USER QUERY      : {user_input}
 BRAND           : {brand_name}
@@ -614,13 +759,13 @@ TARGET WORDS    : ~{target_words}
 
 Return a JSON object with this exact schema:
 {{
-  "title": "<compelling H1 title containing the first primary keyword>",
-  "content_angle": "<unique hook or angle for this piece>",
+  "title": "<compelling H1 title that matches the PRIMARY TOPIC LOCK; include a primary keyword only if it still fits the brief>",
+  "content_angle": "<unique hook that answers the user brief>",
   "sections": [
     {{
       "heading": "<section heading>",
       "heading_level": 2,
-      "brief": "<1–2 sentences: what this section must cover>",
+      "brief": "<1–2 sentences: what this section must cover for the user brief>",
       "keywords": ["<kw1>", "<kw2>"]
     }}
   ]
@@ -628,11 +773,11 @@ Return a JSON object with this exact schema:
 
 Rules:
 - {n_sections} sections
-{awareness_outline_rules}- H1 title MUST include the first primary keyword naturally
-- H1 must be grammatical English (never scrambled phrases like "Cases India Nannies")
-- Prefer titles like "Nanny Abuse Cases in India: …" over keyword-order dumps
+- Every section must advance the PRIMARY TOPIC LOCK — drop brand-template sections that do not
+{awareness_outline_rules}- H1 must be grammatical English and clearly about the user brief
+- Prefer natural titles over keyword-order dumps
 {keyword_assign_rule}
-- Headings are benefit-driven and keyword-rich
+- Headings are benefit-driven and on-brief
 - Each brief is specific enough to write a full section from
 - Return ONLY the JSON object — no prose, no markdown fences
 """
@@ -640,7 +785,8 @@ Rules:
             raw = self._call_llm(
                 system=(
                     "You are an expert content strategist. "
-                    "Create precise, structured content outlines. "
+                    "Create precise outlines that answer the user's brief first. "
+                    "Never replace the brief with a generic brand pitch outline. "
                     "Return valid JSON only — no prose, no markdown."
                 ),
                 user=prompt,
@@ -758,7 +904,7 @@ Rules:
     # ------------------------------------------------------------------
 
     def _build_research_context(self, research_data: Dict) -> Dict:
-        """Pull statistics and citations from the research package."""
+        """Pull statistics, citations, and reported news incidents."""
         stats = [
             str(s).strip()
             for s in research_data.get("statistics", [])
@@ -769,15 +915,49 @@ Rules:
             for c in research_data.get("citations", [])
             if str(c).strip()
         ]
+        incidents = [
+            str(i).strip()
+            for i in research_data.get("incidents", [])
+            if str(i).strip()
+        ]
+        # Also harvest NEWS CASE lines from statistics if incidents list is empty
+        if not incidents:
+            incidents = [
+                s.replace("NEWS CASE:", "", 1).strip()
+                for s in stats
+                if s.upper().startswith("NEWS CASE:")
+            ]
         return {
             "stats": stats,
             "citations": citations[:_MAX_CITATIONS_GLOBAL],
+            "incidents": incidents[:12],
         }
 
-    def _pick_stats(self, research_ctx: Dict, n: int = 3) -> str:
-        """Format up to n stats for injection into a section prompt."""
-        selected = research_ctx.get("stats", [])[:n]
-        if not selected:
+    @staticmethod
+    def _format_incidents(research_ctx: Dict, n: int = 8) -> str:
+        incidents = [
+            str(i).strip()
+            for i in (research_ctx or {}).get("incidents", [])
+            if str(i).strip()
+        ][:n]
+        if not incidents:
+            return (
+                "No reported news incidents were retrieved.\n"
+                "Do NOT invent city-specific abuse cases or victim stories.\n"
+                "If the brief asks for cases, state that on-brief incident reporting "
+                "was limited and use only attributed national context carefully."
+            )
+        return "\n".join(f"- {i}" for i in incidents)
+
+    def _pick_stats(
+        self,
+        research_ctx: Dict,
+        n: int = 3,
+        primary_topic: str = "",
+    ) -> str:
+        """Format up to n stats; prefer ones that overlap the user brief."""
+        stats = [str(s).strip() for s in research_ctx.get("stats", []) if str(s).strip()]
+        if not stats:
             return (
                 "No statistics are available.\n"
                 "Do NOT invent percentages, benchmarks, revenue figures, "
@@ -785,6 +965,32 @@ Rules:
                 "Do NOT make absolute industry claims without a citation from "
                 "CITATIONS AVAILABLE; hedge or omit instead."
             )
+        topic = (primary_topic or "").lower()
+        tokens = [
+            w
+            for w in re.findall(r"[a-z0-9]{4,}", topic)
+            if w
+            not in {
+                "write", "article", "about", "with", "from", "that", "this",
+                "please", "content", "blog", "post",
+            }
+        ][:10]
+        if tokens:
+            ranked = sorted(
+                stats,
+                key=lambda s: sum(1 for t in tokens if t in s.lower()),
+                reverse=True,
+            )
+            # Keep any with at least one overlap first; fill remainder in original order
+            selected = [s for s in ranked if any(t in s.lower() for t in tokens)][:n]
+            if len(selected) < n:
+                for s in stats:
+                    if s not in selected:
+                        selected.append(s)
+                    if len(selected) >= n:
+                        break
+        else:
+            selected = stats[:n]
         return "\n".join(f"- {s}" for s in selected)
 
     # ------------------------------------------------------------------
@@ -802,6 +1008,7 @@ Rules:
         target_words: Optional[int] = None,
         primary_topic: str = "",
         additional_instructions: str = "",
+        objective: str = "",
     ) -> str:
         """Write the full long-form piece in a single LLM call (token-efficient)."""
         if target_words is None:
@@ -811,12 +1018,37 @@ Rules:
         primary_str = ", ".join(primary) or "none"
         secondary_str = ", ".join(secondary) or "none"
         lead_primary = primary[0] if primary else ""
+        hard_cta = self._cta_is_hard_required(
+            content_type,
+            primary_topic=primary_topic,
+            awareness_first=outline.awareness_first,
+            objective=objective,
+        )
+        cta_line = (outline.cta or "").strip()
+        if hard_cta and cta_line:
+            cta_rules = (
+                f"- End with `## Conclusion` that recaps and closes with the exact CTA: {cta_line}\n"
+                "- Prefer specific CTA wording — do not use vague \"reach out today\""
+            )
+            cta_header = f"CTA (use verbatim): {cta_line}"
+            rev_cta = f"- End with the exact CTA phrase: {cta_line}"
+        else:
+            cta_rules = (
+                "- End with `## Conclusion` that recaps the brief and gives a natural next step "
+                "for the reader. Brand CTA is optional — only include it if it still fits the brief."
+            )
+            cta_header = (
+                f"CTA (optional / soft): {cta_line or 'none — close naturally on the brief'}"
+            )
+            rev_cta = (
+                "- Close on-brief; include brand CTA only if it still fits the user brief"
+            )
 
         citations_block = (
             "\n".join(f"- {c}" for c in research_ctx.get("citations", [])[:8])
             or "none"
         )
-        stats_n = 8 if rewrite_instruction else 8
+        stats_n = 8
         revision_block = ""
         if rewrite_instruction:
             revision_block = f"""
@@ -824,14 +1056,14 @@ CRITICAL REVISION PASS — you must apply these editor notes:
 {rewrite_instruction}
 
 Mandatory fixes for this revision (do not skip):
-- Embed at least 3 statistics from RESEARCH STATS below, each with clear attribution
-  including source name AND a concrete figure/year when present in the snippet
-  (e.g. "According to <Source> (Year): …XX%…").
+- Stay on the PRIMARY TOPIC LOCK. If the draft drifted into a brand pitch, rewrite back to the brief.
+- Embed up to 3 on-brief statistics from RESEARCH STATS (only if they match the brief),
+  each with clear attribution (source + figure/year when present).
 - Never invent organisation names, report titles, years, or percentages.
-- If a research snippet is vague, either quote it exactly with attribution or omit it.
-- Remove absolute uncited claims ("most startups fail…") unless they appear in stats/citations.
-- Place at least 1 secondary keyword in the introduction and 1 in the conclusion.
-- End with the exact CTA phrase: {outline.cta}
+- If a research snippet is vague or off-brief, omit it — do not force a stats quota.
+- Remove absolute uncited claims unless they appear in stats/citations.
+- Place secondary keywords only when they still fit the brief (intro + conclusion when natural).
+{rev_cta}
 - Every sentence must be complete — no mid-sentence cutoffs.
 - Write currency as "USD 500" / "USD 1,000" — never use the $ character.
 """
@@ -844,8 +1076,8 @@ PRIMARY TOPIC LOCK (mandatory — do not change meaning, roles, or subject):
 """
 
         extra_block = self._format_editorial_intent(additional_instructions)
+        brief_block = self._brief_first_rules(primary_topic)
 
-        # Micro / short long-form when user asks for very few words
         length_rules = (
             f"TARGET LENGTH   : ~{target_words} words — hit this length closely"
             if target_words < 400
@@ -856,13 +1088,20 @@ PRIMARY TOPIC LOCK (mandatory — do not change meaning, roles, or subject):
         if outline.awareness_first:
             awareness_block = self._awareness_first_rules(outline.brand_name, outline.cta)
 
+        h1_kw_rule = (
+            f'- Start with `# {outline.title}` — include "{lead_primary}" in the H1 '
+            "only if it still matches the PRIMARY TOPIC LOCK"
+            if lead_primary
+            else f"- Start with `# {outline.title}`"
+        )
+
         prompt = f"""Write a complete {content_type} in Markdown.
-{revision_block}{topic_block}{extra_block}{awareness_block}
+{revision_block}{topic_block}{brief_block}{extra_block}{awareness_block}
 TITLE           : {outline.title}
 CONTENT ANGLE   : {outline.content_angle}
 AUDIENCE        : {outline.audience}
 TONE            : {outline.tone}
-CTA (use verbatim): {outline.cta}
+{cta_header}
 {length_rules}
 PRIMARY KEYWORDS: {primary_str}
 SECONDARY KEYWORDS: {secondary_str}
@@ -870,38 +1109,42 @@ SECONDARY KEYWORDS: {secondary_str}
 OUTLINE TO FOLLOW:
 {self._format_section_list(outline.sections)}
 
-RESEARCH STATS (use only these — do not invent figures):
-{self._pick_stats(research_ctx, n=stats_n)}
+RESEARCH STATS (prefer on-brief items — do not invent figures):
+{self._pick_stats(research_ctx, n=stats_n, primary_topic=primary_topic)}
+
+REPORTED NEWS INCIDENTS (evidence-driven cases from news — use when the brief asks for cases):
+{self._format_incidents(research_ctx, n=8)}
 
 CITATIONS AVAILABLE:
 {citations_block}
 
-SEO placement rules (mandatory):
-- Start with `# {outline.title}` — H1 must include "{lead_primary or 'the primary keyword'}"
-- Use the first primary keyword in the introduction (first 100 words)
-- Use each primary keyword at least once in body copy
-- Use at least 2 secondary keywords naturally across H2s or body (no stuffing)
-- Place at least 1 secondary keyword naturally in the introduction AND 1 in the conclusion
-- At least one `##` heading should contain a primary or secondary keyword
+SEO placement rules (apply without hijacking the brief):
+{h1_kw_rule}
+- Use primary keywords naturally in intro/body when they fit the brief (no stuffing)
+- Use secondary keywords only when they still match the brief
+- At least one `##` heading may contain a keyword if it remains grammatical and on-topic
 
 Content rules:
-- Write like a human, not an AI: vary sentence and paragraph length, use natural transitions and contractions, avoid clichéd filler phrases (no "in today's fast-paced world", "moreover", "furthermore", "in conclusion", "it's worth noting", "dive in", "game-changer", "a testament to", "unlock the power")
+- Write like a skilled human editor: clear, specific, useful — not generic AI filler
 {self._no_prompt_leak_rules()}
 {self._grounding_rules(outline.brand_name)}
 - Stay strictly on the PRIMARY TOPIC LOCK — never invert victims/roles or change the subject
 - Follow geography from the PRIMARY TOPIC LOCK / user brief only (India, US, UK, etc.);
   do not invent a market from the brand, and do not fill with unrelated-country forum stats
-- When the user asked for numbers/cases/state-wise data, prioritize those facts from RESEARCH STATS;
-  if research lacks exact figures for the requested audience/years, say so honestly and use the best
-  attributed on-brief sources — never invent counts and never pad with off-audience general scam %
+- When the brief asks for cases / incidents (e.g. nanny abuse cases), lead with REPORTED NEWS INCIDENTS
+  (city, year, allegation/charges, outlet). Do NOT fill the article with only national NCRB/POCSO
+  totals that are not nanny-specific. You may cite NCRB briefly as broader context and must say
+  clearly when official nanny-specific aggregates or state-wise nanny counts are unavailable.
+- When the user asked for numbers/cases/state-wise data, prioritize REPORTED NEWS INCIDENTS + on-brief
+  RESEARCH STATS; never invent case counts or anonymous victim stories
 - Write a hook-driven introduction (100–150 words, no heading under the H1) unless target length is under 400 words — then keep intro proportional
 - Cover every outline section as `##` headings (scale section length to hit ~{target_words} words total)
 - Complete every sentence — never stop mid-word or mid-sentence
-- End with `## Conclusion` that recaps and closes with the exact CTA: {outline.cta}
-- Prefer CTA wording like "Book an AI Discovery Call" style specificity — do not use vague "reach out today"
+{cta_rules}
 - When RESEARCH STATS lists on-brief items and target length >= 400, embed up to 3 attributed statistics
   (intro or early body, one mid-article, one in proof/closing). Format: "According to <Source> (Year if available): <figure>…"
   Do NOT repeat the same statistic three times. Do NOT cite Facebook posts/videos as primary evidence.
+  Do NOT invent stats to hit a quota when on-brief research is thin.
 {self._stat_context_rules()}
 - When a proof / case-study / real-world section appears in the outline, ground it with research stats or named citations above — do not use brand name alone as proof; do not invent anonymous case stories
 - Never invent percentages, benchmarks, financial figures, organisation names, or report titles
@@ -912,7 +1155,6 @@ Content rules:
 
 Write the complete {content_type}:
 """
-        # 8192 avoids mid-article truncation for ~1800–2200 word pieces
         max_tok = 2048 if target_words < 400 else 8192
         return self._call_llm(
             system=self._system_prompt(outline, rewrite_instruction, primary_topic),
@@ -929,6 +1171,8 @@ Write the complete {content_type}:
         rewrite_instruction: str,
         primary_keywords: Optional[List[str]] = None,
         secondary_keywords: Optional[List[str]] = None,
+        primary_topic: str = "",
+        objective: str = "",
     ) -> str:
         """Edit an existing draft against review feedback (preserve structure)."""
         primary = [str(k) for k in (primary_keywords or []) if str(k).strip()][:2]
@@ -939,7 +1183,6 @@ Write the complete {content_type}:
             "\n".join(f"- {c}" for c in research_ctx.get("citations", [])[:8])
             or "none"
         )
-        # Keep revision prompt within context: prefer full draft when possible.
         draft_for_edit = previous_draft
         if len(draft_for_edit) > 14000:
             draft_for_edit = previous_draft[:7000] + "\n\n…\n\n" + previous_draft[-5000:]
@@ -948,8 +1191,26 @@ Write the complete {content_type}:
         if outline.awareness_first:
             awareness_block = self._awareness_first_rules(outline.brand_name, outline.cta)
 
-        prompt = f"""Revise the existing {content_type} Markdown. Do NOT rewrite from scratch.
+        hard_cta = self._cta_is_hard_required(
+            content_type,
+            primary_topic=primary_topic,
+            awareness_first=outline.awareness_first,
+            objective=objective,
+        )
+        cta_item = (
+            f"5. Closing CTA must use verbatim: {outline.cta}"
+            if hard_cta and (outline.cta or "").strip()
+            else "5. Closing must stay on the user brief; brand CTA only if it still fits"
+        )
+        topic_block = (
+            f"\nPRIMARY TOPIC LOCK (do not abandon on revision):\n{primary_topic}\n"
+            if primary_topic
+            else ""
+        )
 
+        prompt = f"""Revise the existing {content_type} Markdown. Do NOT rewrite from scratch.
+{topic_block}
+{self._brief_first_rules(primary_topic)}
 EDITOR FEEDBACK (must fix):
 {rewrite_instruction}
 
@@ -957,28 +1218,32 @@ Preserve the overall structure, headings, and voice. Make targeted edits only.
 {awareness_block}
 BRAND TONE (exact) : {outline.tone}
 AUDIENCE           : {outline.audience}
-CTA (verbatim)     : {outline.cta}
+CTA                : {outline.cta or "optional"}
 PRIMARY KEYWORDS   : {primary_str}
 SECONDARY KEYWORDS : {secondary_str}
 
-RESEARCH STATS (use only these — do not invent figures):
-{self._pick_stats(research_ctx, n=8)}
+RESEARCH STATS (prefer on-brief — do not invent figures):
+{self._pick_stats(research_ctx, n=8, primary_topic=primary_topic)}
+
+REPORTED NEWS INCIDENTS:
+{self._format_incidents(research_ctx, n=8)}
 
 CITATIONS AVAILABLE:
 {citations_block}
 
 Mandatory edit checklist:
-1. Insert at least 3 attributed statistics from RESEARCH STATS (named source + concrete figure).
-   Prefer placing one in the intro, one in a mid-body/proof section, and one near the conclusion.
+1. If the draft is off-brief, rewrite drifted sections back to the PRIMARY TOPIC LOCK first.
+2. If the brief asks for cases/incidents and the draft only has generic NCRB totals, rewrite the
+   cases section using REPORTED NEWS INCIDENTS (name city/outlet/year when present).
+3. Insert up to 3 attributed on-brief statistics from RESEARCH STATS when available
+   (do not invent or force off-brief stats to hit a quota).
 {self._stat_context_rules()}
-2. Remove or hedge absolute uncited claims; never invent org names/years/%.
-3. Place at least 1 secondary keyword naturally in the introduction AND 1 in the conclusion body
-   (not only in H2 headings).
-4. Closing CTA must use verbatim: {outline.cta}
-5. Match tone exactly: {outline.tone}
-6. Write currency as "USD 500" — never use the $ character.
-7. Complete every sentence.
-8. Keep strong existing sections; only edit what the editor feedback requires.
+4. Place secondary keywords naturally only when they still fit the brief.
+{cta_item}
+6. Match tone exactly: {outline.tone}
+7. Write currency as "USD 500" — never use the $ character.
+8. Complete every sentence.
+9. Keep strong existing on-brief sections; only edit what the editor feedback requires.
 
 EXISTING DRAFT:
 {draft_for_edit}
@@ -986,7 +1251,7 @@ EXISTING DRAFT:
 Return the FULL revised Markdown article only — no preamble.
 """
         return self._call_llm(
-            system=self._system_prompt(outline, rewrite_instruction),
+            system=self._system_prompt(outline, rewrite_instruction, primary_topic),
             user=prompt,
             max_tokens=8192,
         )
@@ -997,6 +1262,7 @@ Return the FULL revised Markdown article only — no preamble.
         research_ctx: Dict,
         outline: ContentOutline,
         secondary_keywords: Optional[List[str]] = None,
+        primary_topic: str = "",
     ) -> str:
         """
         Lightweight second pass: inject attributed research stats and
@@ -1020,7 +1286,6 @@ Return the FULL revised Markdown article only — no preamble.
             or kw.lower() not in draft[-900:].lower()
         ]
 
-        # Skip enrichment when draft already looks well grounded and complete.
         if attribution_hits >= 4 and not missing_secondary:
             return draft
 
@@ -1033,13 +1298,17 @@ Return the FULL revised Markdown article only — no preamble.
                 "or early body, move that pitch to a late body section; do not turn the "
                 "piece into a sales brochure.\n"
             )
+        topic_line = (
+            f"PRIMARY TOPIC LOCK (do not drift while enriching):\n{primary_topic}\n\n"
+            if primary_topic
+            else ""
+        )
         prompt = f"""Improve factual grounding of this Markdown article with MINIMAL edits.
+{topic_line}Tone to preserve: {outline.tone}
+CTA to preserve if still on-brief: {outline.cta or "optional"}
 
-Tone to preserve: {outline.tone}
-CTA to preserve verbatim if present: {outline.cta}
-
-RESEARCH STATS (only use these — do not invent):
-{self._pick_stats(research_ctx, n=8)}
+RESEARCH STATS (only use these — prefer on-brief; do not invent):
+{self._pick_stats(research_ctx, n=8, primary_topic=primary_topic)}
 
 CITATIONS:
 {chr(10).join(f"- {c}" for c in research_ctx.get("citations", [])[:6]) or "none"}
@@ -1047,15 +1316,16 @@ CITATIONS:
 Required edits:
 1. Prefer on-brief attributed statistics from RESEARCH STATS (audience + year range if the brief asks).
    Embed up to 3 distinct figures — do NOT repeat the same stat, do NOT cite Facebook as primary evidence,
-   and do NOT invent numbers to hit a quota. If on-brief stats are thin, keep prevention guidance honest.
+   and do NOT invent numbers to hit a quota. If on-brief stats are thin, keep guidance honest.
    Format: "According to <Source> (Year): <figure>…"
 {self._stat_context_rules()}
 2. If listed, weave these secondary keywords naturally into intro and/or conclusion: {secondary_line}
-   Skip ungrammatical fragments (e.g. "nri gets scammed people"); use natural English instead.
+   Skip ungrammatical fragments; use natural English instead. Skip keywords that fight the brief.
 3. Remove invented anonymous anecdotes / unsourced "real-world examples".
 4. Do not invent figures, organisations, or years.
 5. Do not use the $ character — write USD amounts.
 6. Keep structure/headings; return the FULL revised Markdown only.
+7. Never replace the article topic with a brand pitch while enriching.
 {awareness_line}
 DRAFT:
 {draft[:12000]}
@@ -1063,8 +1333,8 @@ DRAFT:
         try:
             enriched = self._call_llm(
                 system=(
-                    "You are a careful editorial reviser. Make minimal targeted edits. "
-                    "Return only the full Markdown article."
+                    "You are a careful editorial reviser. Stay on the user's primary topic. "
+                    "Make minimal targeted edits. Return only the full Markdown article."
                 ),
                 user=prompt,
                 max_tokens=8192,
@@ -1206,6 +1476,104 @@ Write the conclusion:
         return "\n".join(parts)
 
     # ------------------------------------------------------------------
+    # Step 4a — Micro writing (user asked for a tiny word count)
+    # ------------------------------------------------------------------
+
+    def _write_micro_form(
+        self,
+        outline: ContentOutline,
+        content_type: str,
+        rewrite_instruction: str = "",
+        primary_keywords: Optional[List[str]] = None,
+        target_words: int = 10,
+        primary_topic: str = "",
+        additional_instructions: str = "",
+        user_input: str = "",
+    ) -> str:
+        """Write an ultra-short piece that must hit the exact word budget."""
+        topic = (primary_topic or user_input or outline.title or "AI").strip()
+        # Drop length meta from the topic so the model does not write about "10 words"
+        topic = re.sub(
+            r"\b(?:exactly\s+|about\s+|around\s+|~)?\d{1,5}\s*[\-]?\s*words?\b",
+            " ",
+            topic,
+            flags=re.I,
+        )
+        topic = re.sub(r"\s{2,}", " ", topic).strip(" -,:;") or "AI"
+        primary = self._filter_placeable_keywords(primary_keywords, limit=1)
+        primary_str = primary[0] if primary else ""
+
+        rewrite_block = ""
+        if rewrite_instruction.strip():
+            rewrite_block = (
+                "\nREVISION: shorten or adjust to the exact word count. "
+                "Do not expand.\n"
+                f"{rewrite_instruction.strip()[:400]}\n"
+            )
+        extra = self._format_editorial_intent(additional_instructions)
+
+        is_comment = content_type == "comment" or "comment" in topic.lower() or (
+            "reply" in topic.lower() and target_words <= 40
+        )
+        if is_comment or content_type == "comment":
+            prompt = f"""Write a social COMMENT / reply that is EXACTLY {target_words} words.
+
+USER INTENT / POST CONTEXT: {topic}
+{extra}{rewrite_block}
+HARD RULES:
+- EXACTLY {target_words} words. Count carefully.
+- This is a reply under someone's post (e.g. thanking them for saying the article is good).
+- Sound like a real person. Warm and brief.
+- NO brand pitch, NO sales CTA, NO hashtags, NO stats, NO headings, NO SEO keywords.
+- NO incomplete sentences. Return ONLY the comment text.
+"""
+            system = (
+                "You write ultra-short social comments. Match the user's intent. "
+                "Never pitch products. Never exceed the word count."
+            )
+        else:
+            prompt = f"""Write a {content_type} that is EXACTLY {target_words} words. No more, no less.
+
+TOPIC: {topic}
+TONE: {outline.tone}
+OPTIONAL KEYWORD (use only if it fits naturally): {primary_str or "none"}
+{extra}{rewrite_block}
+HARD RULES:
+- Output EXACTLY {target_words} words total (count every word carefully).
+- Plain prose only. No Markdown headings (# ##), no bullet lists, no hashtags.
+- Do NOT mention the word count, "10 word", "word blog", or similar meta phrases.
+- Do NOT invent statistics, citations, or multi-paragraph essays.
+- Do NOT pad with sections, titles, or repeated CTAs.
+- A short natural closing CTA is allowed ONLY if it still fits inside the {target_words}-word budget.
+- Return ONLY the {target_words}-word text. Nothing else.
+"""
+            system = (
+                "You write ultra-short branded copy. You count words precisely and "
+                "never exceed the requested length. Never turn a micro request into "
+                "a long article."
+            )
+        return self._call_llm(
+            system=system,
+            user=prompt,
+            max_tokens=max(64, target_words * 4),
+        )
+
+    @staticmethod
+    def _enforce_micro_word_count(draft: str, target_words: int) -> str:
+        """Trim padded micro drafts to the requested word count."""
+        if not draft or target_words <= 0:
+            return draft
+        # Prefer the first non-empty paragraph (models often pad after a good opener).
+        chunks = [c.strip() for c in re.split(r"\n\s*\n", draft.strip()) if c.strip()]
+        candidate = chunks[0] if chunks else draft.strip()
+        # Strip heading markers if model ignored instructions
+        candidate = re.sub(r"^#+\s*", "", candidate).strip()
+        words = candidate.split()
+        if len(words) > target_words:
+            candidate = " ".join(words[:target_words])
+        return candidate
+
+    # ------------------------------------------------------------------
     # Step 4b — Short-form writing (linkedin, email, carousel)
     # ------------------------------------------------------------------
 
@@ -1235,6 +1603,7 @@ Write the conclusion:
             topic_block = (
                 f"\nPRIMARY TOPIC LOCK (do not change meaning/roles):\n{primary_topic}\n"
             )
+        brief_block = self._brief_first_rules(primary_topic)
         extra_block = self._format_editorial_intent(additional_instructions)
         rewrite_block = ""
         if rewrite_instruction.strip():
@@ -1242,14 +1611,25 @@ Write the conclusion:
                 "\nREVISION NOTES (apply meaning only — do not paste this text into the draft):\n"
                 f"{rewrite_instruction.strip()}\n"
             )
+        soft_cta = not self._cta_is_hard_required(
+            content_type,
+            primary_topic=primary_topic,
+            awareness_first=outline.awareness_first,
+            objective="",
+        )
+        cta_line = (
+            f"CTA (soft / optional): {outline.cta or 'none — close naturally'}"
+            if soft_cta
+            else f"CTA: {outline.cta}"
+        )
 
         prompt = f"""Write a complete {content_type} for {platform}.
-{topic_block}{extra_block}{rewrite_block}
+{topic_block}{brief_block}{extra_block}{rewrite_block}
 TITLE / TOPIC   : {outline.title}
 CONTENT ANGLE   : {outline.content_angle}
 AUDIENCE        : {outline.audience}
 TONE            : {outline.tone}
-CTA             : {outline.cta}
+{cta_line}
 TARGET LENGTH   : ~{target_words} words — adhere closely to this length
 PRIMARY KEYWORDS: {", ".join(primary) or "none"}
 SECONDARY KEYWORDS: {", ".join(secondary) or "none"}
@@ -1258,18 +1638,18 @@ CONTENT STRUCTURE TO COVER:
 {self._format_section_list(outline.sections)}
 
 RELEVANT STATS:
-{self._pick_stats(research_ctx, n=3)}
+{self._pick_stats(research_ctx, n=3, primary_topic=primary_topic)}
 
 FORMAT REQUIREMENTS:
 {format_rules}
 
 SEO notes:
-- Include the first primary keyword early and naturally if it fits
-- Do not use secondary keywords in short-form posts/emails
+- Include the first primary keyword early and naturally if it fits the brief (skip for comments)
+- Do not use secondary keywords in short-form posts/emails/comments
 - Do not keyword-stuff
-- Stay strictly on the primary topic; never divert or invert roles
+- Stay strictly on the primary topic; never divert into a brand pitch if the brief is different
 {self._no_prompt_leak_rules()}
-{self._grounding_rules(outline.brand_name)}
+{self._grounding_rules(outline.brand_name) if content_type != "comment" else "- Do not invent stats or hard-sell the brand in a comment."}
 
 Human voice (important):
 - Sound like a real person, not AI. Vary sentence length, use contractions, be specific
@@ -1277,10 +1657,28 @@ Human voice (important):
 
 Write the complete {content_type}:
 """
-        max_tok = 512 if target_words <= 50 else 2048
+        # Comments: do not push SEO keywords into the model prompt
+        if content_type == "comment" or (platform or "").lower() == "comment":
+            prompt = f"""Write a paste-ready social media COMMENT / reply only.
+{topic_block}{extra_block}{rewrite_block}
+TOPIC / POST CONTEXT: {outline.title or primary_topic or "the post"}
+TONE: {outline.tone}
+TARGET LENGTH: ~{target_words} words (short reply)
+
+FORMAT REQUIREMENTS:
+{format_rules}
+
+Return ONLY the comment text. No hashtags. No titles. No lists.
+"""
+        max_tok = 256 if content_type == "comment" or target_words <= 50 else 2048
         return self._call_llm(
-            system=self._system_prompt(
-                outline, rewrite_instruction, primary_topic, long_form=False
+            system=(
+                "You write natural social media comments/replies. "
+                "Match the user's intent. Never add hashtags or promo blocks."
+                if content_type == "comment" or (platform or "").lower() == "comment"
+                else self._system_prompt(
+                    outline, rewrite_instruction, primary_topic, long_form=False
+                )
             ),
             user=prompt,
             max_tokens=max_tok,
@@ -1315,11 +1713,13 @@ Write the complete {content_type}:
         primary_topic: str = "",
         long_form: bool = True,
     ) -> str:
-        """Shared system prompt that frames the LLM as a focused, human-sounding writer."""
+        """Shared system prompt — brief-first, human, ChatGPT/Claude-level usefulness."""
         base = (
-            f"You are an experienced human content writer specialising in {outline.tone.lower()} writing "
-            f"for {outline.audience}. "
-            "You follow formatting instructions exactly, never add meta-commentary, "
+            f"You are an expert editorial writer with the judgment of a senior human editor "
+            f"(clear, specific, useful — {outline.tone.lower()} voice for {outline.audience}). "
+            "Serve the user's brief first, like ChatGPT or Claude would: stay on topic, "
+            "match the requested format, and never replace the ask with a generic brand pitch. "
+            "Follow formatting instructions exactly, never add meta-commentary, "
             "and return only the requested content — no preamble, no sign-off. "
             "Never invent abusive, discriminatory, or illegal how-to content. "
             "Never divert from the user's primary topic or invert roles/meaning. "
@@ -1334,11 +1734,15 @@ Write the complete {content_type}:
                 "follow brand voice and the no-dash typography rules above."
             )
         if primary_topic:
-            base += f"\n\nPRIMARY TOPIC LOCK:\n{primary_topic}"
+            base += (
+                f"\n\nPRIMARY TOPIC LOCK (highest priority — higher than brand CTA/SEO kit):\n"
+                f"{primary_topic}"
+            )
         if rewrite_instruction:
             base += (
                 f"\n\nREVISION INSTRUCTIONS FROM EDITOR:\n{rewrite_instruction}\n"
-                "Apply these instructions throughout the entire piece."
+                "Apply these instructions throughout the entire piece while staying on the "
+                "PRIMARY TOPIC LOCK."
             )
         return base
 
@@ -1395,6 +1799,18 @@ Write the complete {content_type}:
 
     def _format_rules(self, content_type: str, platform: str) -> str:
         """Return platform-specific formatting instructions."""
+        plat = (platform or "").lower().strip()
+        # Platform wins when comment (even if content_type was aliased)
+        if content_type == "comment" or plat == "comment":
+            return (
+                "- Output ONLY the comment text a user can paste under a post\n"
+                "- 2 to 5 short sentences; stay under ~80 words unless user asked otherwise\n"
+                "- Match the user's intent exactly (agree / insight / question / thanks)\n"
+                "- If a source post was provided, reply to that post — do not invent a new post\n"
+                "- NO hashtags, NO headings, NO bullet lists, NO SEO keyword stuffing\n"
+                "- NO hard CTA, NO 'Hashtags:' footer, NO title line\n"
+                "- Soft brand mention only if the user explicitly asked for it"
+            )
         if content_type == "linkedin":
             return (
                 "- First line: single bold hook (no hashtags)\n"
