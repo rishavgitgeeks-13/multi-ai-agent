@@ -402,7 +402,7 @@
         </div>
         <div class="field" style="max-width:180px">
           <label for="a_rev">Max revisions</label>
-          <input id="a_rev" type="number" min="1" max="5" value="3" />
+          <input id="a_rev" type="number" min="1" max="5" value="1" />
         </div>
         <div class="form-actions">
           <button class="btn-primary" type="button" data-run="auto">Generate</button>
@@ -440,7 +440,7 @@
         </div>
         <div class="field" style="max-width:180px">
           <label for="c_rev">Max revisions</label>
-          <input id="c_rev" type="number" min="1" max="5" value="3" />
+          <input id="c_rev" type="number" min="1" max="5" value="1" />
         </div>
         <div class="form-actions">
           <button class="btn-primary" type="button" data-run="content">Generate content</button>
@@ -481,7 +481,7 @@
         </div>
         <div class="field" style="max-width:180px">
           <label for="e_rev">Max revisions</label>
-          <input id="e_rev" type="number" min="1" max="4" value="2" />
+          <input id="e_rev" type="number" min="1" max="4" value="1" />
         </div>
         <div class="form-actions">
           <button class="btn-primary" type="button" data-run="email">Generate email</button>
@@ -510,7 +510,7 @@
           </div>
           <div class="field">
             <label for="s_rev">Max revisions</label>
-            <input id="s_rev" type="number" min="1" max="5" value="3" />
+            <input id="s_rev" type="number" min="1" max="5" value="1" />
           </div>
         </div>
         <div class="field">
@@ -553,7 +553,7 @@
         </div>
         <div class="field" style="max-width:180px">
           <label for="so_rev">Max revisions</label>
-          <input id="so_rev" type="number" min="1" max="4" value="2" />
+          <input id="so_rev" type="number" min="1" max="4" value="1" />
         </div>
         <div class="form-actions">
           <button class="btn-primary" type="button" data-run="social">Generate social post</button>
@@ -697,7 +697,7 @@
             language: $("#a_lang").value,
             additional_instructions: $("#a_instr").value,
             session_id: state.sessionId,
-            max_revisions: Number($("#a_rev").value) || 3,
+            max_revisions: Number($("#a_rev").value) || 1,
           },
         };
       }
@@ -712,7 +712,7 @@
             language: $("#c_lang").value,
             additional_instructions: $("#c_instr").value,
             session_id: state.sessionId,
-            max_revisions: Number($("#c_rev").value) || 3,
+            max_revisions: Number($("#c_rev").value) || 1,
           },
         };
       }
@@ -727,7 +727,7 @@
             language: $("#e_lang").value,
             additional_instructions: $("#e_instr").value,
             session_id: state.sessionId,
-            max_revisions: Number($("#e_rev").value) || 2,
+            max_revisions: Number($("#e_rev").value) || 1,
           },
         };
       }
@@ -741,7 +741,7 @@
             language: $("#s_lang").value,
             additional_instructions: $("#s_instr").value,
             session_id: state.sessionId,
-            max_revisions: Number($("#s_rev").value) || 3,
+            max_revisions: Number($("#s_rev").value) || 1,
           },
         };
       }
@@ -755,7 +755,7 @@
           language: $("#so_lang").value,
           additional_instructions: $("#so_instr").value,
           session_id: state.sessionId,
-          max_revisions: Number($("#so_rev").value) || 2,
+          max_revisions: Number($("#so_rev").value) || 1,
         },
       };
     }
@@ -828,6 +828,37 @@
 
       $("#contentOut").textContent = state.lastMarkdown || "(No markdown content in response)";
 
+      // Hashtags + citations under content
+      const finalOut = result.final_output || {};
+      const hashtags = finalOut.hashtags || (result.social_meta || {}).hashtags || [];
+      const citations = finalOut.citations || [];
+      let contentExtras = "";
+      if (hashtags.length && kind !== "email") {
+        contentExtras += `<p style="margin:12px 0 4px"><strong>Hashtags:</strong> ${escapeHtml(hashtags.join(" "))}</p>`;
+      }
+      if (citations.length && kind !== "email") {
+        const items = citations.slice(0, 12).map((c, i) => {
+          if (c && typeof c === "object") {
+            const label = escapeHtml(String(c.formatted || c.text || "Source").trim());
+            const url = String(c.url || "").trim();
+            if (url) {
+              return `<li>${i + 1}. <a href="${escapeHtml(url)}" target="_blank" rel="noopener">${label}</a></li>`;
+            }
+            return `<li>${i + 1}. ${label}</li>`;
+          }
+          return `<li>${i + 1}. ${escapeHtml(String(c))}</li>`;
+        }).join("");
+        contentExtras += `<div style="margin-top:12px"><strong>Sources / Citations</strong><ol style="margin:6px 0 0; padding-left:1.2rem">${items}</ol></div>`;
+      }
+      const existingExtras = $("#contentExtras");
+      if (existingExtras) existingExtras.remove();
+      if (contentExtras) {
+        const wrap = document.createElement("div");
+        wrap.id = "contentExtras";
+        wrap.innerHTML = contentExtras;
+        $("#contentOut").after(wrap);
+      }
+
       // Review panel
       const dims = review.dimension_scores || {};
       let dimHtml = Object.keys(dims).length
@@ -853,8 +884,21 @@
       `;
 
       // Metadata
-      const seo = (result.final_output || {}).seo || {};
+      const seo = finalOut.seo || {};
       const readTime = meta.read_time_min ?? meta.reading_time_minutes ?? "—";
+      let citationMeta = "—";
+      if (citations.length) {
+        citationMeta = citations.slice(0, 8).map((c, i) => {
+          if (c && typeof c === "object") {
+            const label = escapeHtml(String(c.formatted || c.text || "Source").trim());
+            const url = String(c.url || "").trim();
+            return url
+              ? `${i + 1}. <a href="${escapeHtml(url)}" target="_blank" rel="noopener">${label}</a>`
+              : `${i + 1}. ${label}`;
+          }
+          return `${i + 1}. ${escapeHtml(String(c))}`;
+        }).join("<br>");
+      }
       $("#sub-metadata").innerHTML = `
         <div class="meta-grid">
           <div class="k">Word count</div><div class="v">${meta.word_count ?? "—"}</div>
@@ -865,6 +909,8 @@
           <div class="k">Slug</div><div class="v"><span class="slug">${escapeHtml(seo.slug || "—")}</span></div>
           <div class="k">Search intent</div><div class="v">${escapeHtml(seo.search_intent || "—")}</div>
           <div class="k">Primary keywords</div><div class="v">${escapeHtml((seo.primary_keywords || []).slice(0, 6).join(", ") || "—")}</div>
+          <div class="k">Hashtags</div><div class="v">${escapeHtml((hashtags || []).join(" ") || "—")}</div>
+          <div class="k">Sources</div><div class="v">${citationMeta}</div>
           <div class="k">Request ID</div><div class="v">${escapeHtml(result.request_id || "—")}</div>
         </div>
       `;
