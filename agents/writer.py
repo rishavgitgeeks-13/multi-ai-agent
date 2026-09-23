@@ -68,6 +68,8 @@ def writer_node(state: ContentState) -> ContentState:
         draft,
         primary_topic=primary_topic,
         user_input=state.get("user_input") or "",
+        additional_instructions=state.get("additional_instructions") or "",
+        defensive_allow=bool((state.get("safety") or {}).get("defensive_allow")),
         request_id=state.get("request_id", ""),
         session_id=state.get("session_id", ""),
         brand=state.get("brand"),
