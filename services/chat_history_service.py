@@ -37,6 +37,27 @@ def _mongo_collection():
         return None
 
 
+def _migrate_file_to_mongo_if_empty(col) -> None:
+    """One-time seed: copy local file history into Mongo when the collection is empty."""
+    try:
+        if col.estimated_document_count() > 0:
+            return
+        data = _load_file()
+        if not data:
+            return
+        docs: List[Dict[str, Any]] = []
+        for turns in data.values():
+            for t in turns or []:
+                if isinstance(t, dict) and t.get("content"):
+                    docs.append(dict(t))
+        if not docs:
+            return
+        col.insert_many(docs, ordered=False)
+        logger.info("Migrated %d chat history turns from file → Mongo", len(docs))
+    except Exception as exc:
+        logger.warning("chat history file→Mongo migrate skipped: %s", exc)
+
+
 def _load_file() -> Dict[str, List[Dict[str, Any]]]:
     if not _FILE_PATH.exists():
         return {}
@@ -64,7 +85,7 @@ def add_turn(
     metadata: Optional[Dict[str, Any]] = None,
     session_id: str = "",
 ) -> bool:
-    """Append one turn for a user. Returns True on success."""
+    """Append one turn for a user. Writes Mongo + file (dual) for durability."""
     user = (username or "").strip().lower()
     if not user or not content:
         return False
@@ -76,26 +97,30 @@ def add_turn(
         "metadata": metadata or {},
         "created_at": _now_iso(),
     }
+
+    mongo_ok = False
     col = _mongo_collection()
     if col is not None:
         try:
             col.insert_one(dict(doc))
-            return True
+            mongo_ok = True
         except Exception as exc:
-            logger.warning("Mongo add_turn failed, file fallback: %s", exc)
+            logger.warning("Mongo add_turn failed, continuing with file: %s", exc)
 
-    data = _load_file()
-    bucket = data.setdefault(user, [])
-    bucket.append(doc)
-    # Cap per-user file history
-    if len(bucket) > 500:
-        data[user] = bucket[-500:]
+    file_ok = False
     try:
+        data = _load_file()
+        bucket = data.setdefault(user, [])
+        bucket.append(doc)
+        # Cap per-user file history
+        if len(bucket) > 500:
+            data[user] = bucket[-500:]
         _save_file(data)
-        return True
+        file_ok = True
     except Exception as exc:
         logger.error("chat history file save failed: %s", exc)
-        return False
+
+    return mongo_ok or file_ok
 
 
 def get_user_history(username: str, limit: int = 100) -> List[Dict[str, Any]]:
@@ -103,33 +128,41 @@ def get_user_history(username: str, limit: int = 100) -> List[Dict[str, Any]]:
     user = (username or "").strip().lower()
     if not user:
         return []
+    cap = max(1, min(limit, 500))
     col = _mongo_collection()
     if col is not None:
+        _migrate_file_to_mongo_if_empty(col)
         try:
             cursor = (
                 col.find({"username": user}, {"_id": 0})
                 .sort("created_at", 1)
-                .limit(max(1, min(limit, 500)))
+                .limit(cap)
             )
-            return list(cursor)
+            docs = list(cursor)
+            if docs:
+                return docs
+            # Mongo is empty for this user — fall through to file mirror
         except Exception as exc:
             logger.warning("Mongo get_user_history failed: %s", exc)
 
     bucket = _load_file().get(user) or []
-    return bucket[-max(1, min(limit, 500)) :]
+    return bucket[-cap:]
 
 
 def get_all_recent_activity(limit: int = 100) -> List[Dict[str, Any]]:
     """Recent turns across all users (newest first) for admin activity view."""
+    cap = max(1, min(limit, 500))
     col = _mongo_collection()
     if col is not None:
         try:
             cursor = (
                 col.find({}, {"_id": 0})
                 .sort("created_at", -1)
-                .limit(max(1, min(limit, 500)))
+                .limit(cap)
             )
-            return list(cursor)
+            docs = list(cursor)
+            if docs:
+                return docs
         except Exception as exc:
             logger.warning("Mongo get_all_recent_activity failed: %s", exc)
 
@@ -138,7 +171,7 @@ def get_all_recent_activity(limit: int = 100) -> List[Dict[str, Any]]:
     for turns in data.values():
         all_turns.extend(turns)
     all_turns.sort(key=lambda t: str(t.get("created_at") or ""), reverse=True)
-    return all_turns[: max(1, min(limit, 500))]
+    return all_turns[:cap]
 
 
 def stable_session_id(username: str) -> str:
