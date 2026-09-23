@@ -28,7 +28,7 @@ class ContentRequest(BaseModel):
     language: str = Field("English", description="English | Hindi")
     additional_instructions: str = Field("", description="Extra writer guidance.")
     session_id: Optional[str] = Field(None, description="Session ID for ConversationMemory.")
-    max_revisions: int = Field(3, ge=1, le=5, description="Max review→writer cycles.")
+    max_revisions: int = Field(1, ge=1, le=5, description="Max review→writer cycles.")
 
     model_config = {"json_schema_extra": {
         "example": {
@@ -51,7 +51,7 @@ class EmailRequest(BaseModel):
     language: str = Field("English", description="English | Hindi")
     additional_instructions: str = Field("", description="Extra writer guidance.")
     session_id: Optional[str] = Field(None, description="Session ID for ConversationMemory.")
-    max_revisions: int = Field(2, ge=1, le=4, description="Max review→writer cycles.")
+    max_revisions: int = Field(1, ge=1, le=4, description="Max review→writer cycles.")
 
     model_config = {"json_schema_extra": {
         "example": {
@@ -72,7 +72,7 @@ class SEORequest(BaseModel):
     language: str = Field("English", description="English | Hindi")
     additional_instructions: str = Field("", description="Extra writer guidance.")
     session_id: Optional[str] = Field(None, description="Session ID for ConversationMemory.")
-    max_revisions: int = Field(2, ge=1, le=5, description="Max review→writer cycles.")
+    max_revisions: int = Field(1, ge=1, le=5, description="Max review→writer cycles.")
 
     model_config = {"json_schema_extra": {
         "example": {
@@ -96,7 +96,7 @@ class SocialRequest(BaseModel):
     language: str = Field("English", description="English | Hindi")
     additional_instructions: str = Field("", description="Extra writer guidance.")
     session_id: Optional[str] = Field(None, description="Session ID for ConversationMemory.")
-    max_revisions: int = Field(2, ge=1, le=4, description="Max review→writer cycles.")
+    max_revisions: int = Field(1, ge=1, le=4, description="Max review→writer cycles.")
 
     model_config = {"json_schema_extra": {
         "example": {
@@ -127,7 +127,7 @@ class GenerateRequest(BaseModel):
     language: str = "English"
     additional_instructions: str = ""
     session_id: Optional[str] = None
-    max_revisions: int = Field(3, ge=1, le=5)    
+    max_revisions: int = Field(1, ge=1, le=5)
 
 
 class WorkflowResult(BaseModel):
