@@ -174,8 +174,8 @@ def login(username: str, password: str) -> Tuple[bool, str]:
         return False, "Enter username and password."
 
     admin_user, admin_pass = _admin_credentials()
-    if username == admin_user and password == admin_pass:
-        return True, admin_user
+    if username.lower() == admin_user.strip().lower() and password == admin_pass:
+        return True, admin_user.strip()
 
     user = _get_user(username)
     if not user:
