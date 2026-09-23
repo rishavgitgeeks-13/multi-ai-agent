@@ -87,7 +87,7 @@ class EmailWorkflow:
         language: str = "English",
         additional_instructions: str = "",
         session_id: Optional[str] = None,
-        max_revisions: int = 2,
+        max_revisions: int = 1,
     ) -> Dict[str, Any]:
         """
         Run the email content workflow.
@@ -101,7 +101,7 @@ class EmailWorkflow:
         language              : "English" (default) | "Hindi".
         additional_instructions: Extra writer guidance appended to the prompt.
         session_id            : If provided, saves workflow turn to ConversationMemory.
-        max_revisions         : Review cycles before forcing PASS (default 2).
+        max_revisions         : Review cycles before forcing PASS (default 1).
 
         Returns
         -------
