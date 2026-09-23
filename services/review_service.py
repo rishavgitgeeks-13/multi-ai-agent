@@ -129,8 +129,10 @@ class ReviewService:
             api_key=settings.OPENAI_API_KEY
         )
 
-        # Review configuration
-        self._model = settings.OPENAI_MODEL
+        # Review scoring uses the light model by default (cost).
+        # Pre-checks still catch length/keyword/topic issues without the LLM.
+        # Override with OPENAI_MODEL_REVIEW=gpt-4.1 if scoring quality dips.
+        self._model = settings.model_for_review()
         self._temperature = 0.0  # deterministic reviews
 
         logger.info(
