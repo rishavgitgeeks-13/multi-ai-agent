@@ -67,7 +67,13 @@ async def generate(
 
     try:
         context = _business_context.resolve(
-            user_input=req.user_input,
+            # Extra tips often carry format/length (e.g. "LinkedIn, 1200 words")
+            # — include them so Auto routes to the right workflow.
+            user_input=(
+                f"{req.user_input}\n{req.additional_instructions}".strip()
+                if (req.additional_instructions or "").strip()
+                else req.user_input
+            ),
             brand=req.brand,
         )
 
