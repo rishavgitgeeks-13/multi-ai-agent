@@ -111,12 +111,12 @@ class WriterService:
             api_key=settings.OPENAI_API_KEY
         )
 
-        self._model = settings.OPENAI_MODEL
+        self._model = settings.model_for_writer()
         self._temperature = settings.DEFAULT_TEMPERATURE
         self._max_tokens = settings.MAX_TOKENS
 
         logger.info(
-            "WriterService ready | model=%s",
+            "WriterService ready | model=%s (premium)",
             self._model,
         )
 
@@ -522,6 +522,33 @@ BRIEF-FIRST QUALITY BAR (mandatory — write like a top assistant, not a brand b
         # Hard length guard for micro asks (models often pad after the first line).
         if micro and (draft or "").strip():
             draft = self._enforce_micro_word_count(draft, target_words)
+        elif (
+            (draft or "").strip()
+            and target_words
+            and target_words > 75
+            and not bool(strategy.get("word_count_flexible", True))
+        ):
+            # Soft trim when Extra tips set a hard word count and the model overshoots.
+            draft = self._enforce_target_word_band(
+                draft,
+                target_words,
+                hi_ratio=1.05,
+            )
+            # Expand when the model undershoots (common on LinkedIn habits ~600 words).
+            if len((draft or "").split()) < int(target_words * 0.95):
+                draft = self._expand_to_target_length(
+                    draft=draft,
+                    target_words=target_words,
+                    content_type=content_type,
+                    primary_topic=topic_lock,
+                    research_ctx=research_ctx,
+                )
+                draft = strip_all_dashes(self._strip_ai_cliches(draft or ""))
+                draft = self._enforce_target_word_band(
+                    draft,
+                    target_words,
+                    hi_ratio=1.05,
+                )
 
         logger.info(
             "WriterService complete | content_type=%s | words=%d | target=%s",
@@ -1083,6 +1110,12 @@ PRIMARY TOPIC LOCK (mandatory — do not change meaning, roles, or subject):
             if target_words < 400
             else f"TARGET LENGTH   : ~{target_words} words"
         )
+        # Extra tips often set an exact count — treat as a hard stop, not a minimum to exceed.
+        length_rules += (
+            f"\nLENGTH HARD RULE: Do NOT exceed {int(target_words * 1.05)} words. "
+            f"Aim for {target_words}. Prefer ending early over padding. "
+            "If outline sections would overflow, shorten each section — do not add filler."
+        )
 
         awareness_block = ""
         if outline.awareness_first:
@@ -1573,6 +1606,113 @@ HARD RULES:
             candidate = " ".join(words[:target_words])
         return candidate
 
+    @staticmethod
+    def _enforce_target_word_band(
+        draft: str,
+        target_words: int,
+        hi_ratio: float = 1.05,
+    ) -> str:
+        """
+        If draft exceeds target * hi_ratio, drop trailing paragraphs until inside band.
+        Preserves opening + core body; removes padding at the end only.
+        """
+        if not draft or target_words <= 0:
+            return draft
+        hi = max(target_words, int(target_words * hi_ratio))
+        words = draft.split()
+        if len(words) <= hi:
+            return draft
+
+        paras = [p for p in re.split(r"\n\s*\n", draft.strip()) if p.strip()]
+        if len(paras) <= 1:
+            # Single block — hard trim at sentence boundary near hi
+            text = draft.strip()
+            cut = " ".join(text.split()[:hi])
+            # Prefer ending on sentence punctuation when possible
+            m = list(re.finditer(r"[.!?…][\"')\]]*\s", cut))
+            if m and m[-1].end() > int(hi * 0.7):
+                cut = cut[: m[-1].end()].rstrip()
+            logger.info(
+                "Trimmed hard-target draft | before=%d | after=%d | target=%d",
+                len(words),
+                len(cut.split()),
+                target_words,
+            )
+            return cut
+
+        kept: list[str] = []
+        count = 0
+        for p in paras:
+            p_words = len(p.split())
+            if kept and count + p_words > hi:
+                break
+            kept.append(p)
+            count += p_words
+        trimmed = "\n\n".join(kept).strip() or draft
+        logger.info(
+            "Trimmed hard-target draft | before=%d | after=%d | target=%d",
+            len(words),
+            len(trimmed.split()),
+            target_words,
+        )
+        return trimmed
+
+    def _expand_to_target_length(
+        self,
+        draft: str,
+        target_words: int,
+        content_type: str,
+        primary_topic: str = "",
+        research_ctx: Optional[Dict] = None,
+    ) -> str:
+        """
+        One surgical expand when the draft is under a hard user word target.
+        Keeps the existing voice/hook; adds depth rather than rewriting from scratch.
+        """
+        current = len((draft or "").split())
+        lo = int(target_words * 0.95)
+        if current >= lo or not (draft or "").strip():
+            return draft
+
+        need = max(40, target_words - current)
+        stats = self._pick_stats(research_ctx or {}, n=4, primary_topic=primary_topic)
+        topic = (primary_topic or "").strip() or "the same topic"
+        logger.info(
+            "Expanding undersized draft | words=%d | target=%d | need~%d",
+            current,
+            target_words,
+            need,
+        )
+        prompt = f"""The draft below is too short for the user's HARD length ask.
+
+CURRENT WORDS : {current}
+REQUIRED      : {target_words} words (acceptable {lo}–{int(target_words * 1.05)})
+TOPIC LOCK    : {topic}
+CONTENT TYPE  : {content_type}
+
+Expand THIS draft (do not start over):
+- Keep the opening hook and overall voice.
+- Add {need}+ words of useful depth: examples, steps, objections, practical tips, a short story, or clearer explanations.
+- Stay on the same topic. Do not add unrelated brand pitches.
+- Do not use dash/hyphen characters.
+- Return the FULL expanded piece only (no commentary).
+
+OPTIONAL STATS TO WEAVE IN NATURALLY (only if on-topic):
+{stats}
+
+DRAFT TO EXPAND:
+{draft}
+"""
+        expanded = self._call_llm(
+            system=(
+                "You are a professional editor. Expand drafts to hit a hard word count "
+                "without fluff. Preserve the author's hook and voice."
+            ),
+            user=prompt,
+            max_tokens=min(8192, max(2048, int(target_words * 2.2))),
+        )
+        return (expanded or "").strip() or draft
+
     # ------------------------------------------------------------------
     # Step 4b — Short-form writing (linkedin, email, carousel)
     # ------------------------------------------------------------------
@@ -1630,7 +1770,7 @@ CONTENT ANGLE   : {outline.content_angle}
 AUDIENCE        : {outline.audience}
 TONE            : {outline.tone}
 {cta_line}
-TARGET LENGTH   : ~{target_words} words — adhere closely to this length
+TARGET LENGTH   : HARD TARGET {target_words} words (minimum {int(target_words * 0.95)}, maximum {int(target_words * 1.05)}). You MUST reach at least {int(target_words * 0.95)} words — do not stop early.
 PRIMARY KEYWORDS: {", ".join(primary) or "none"}
 SECONDARY KEYWORDS: {", ".join(secondary) or "none"}
 
@@ -1643,6 +1783,10 @@ RELEVANT STATS:
 FORMAT REQUIREMENTS:
 {format_rules}
 
+LENGTH NOTE:
+- The user asked for ~{target_words} words. LinkedIn can be long-form when requested.
+- Write enough substance to hit the minimum. Short viral-length posts are wrong here if the target is high.
+
 SEO notes:
 - Include the first primary keyword early and naturally if it fits the brief (skip for comments)
 - Do not use secondary keywords in short-form posts/emails/comments
@@ -1654,6 +1798,7 @@ SEO notes:
 Human voice (important):
 - Sound like a real person, not AI. Vary sentence length, use contractions, be specific
 - Avoid clichés: no "in today's fast-paced world", "moreover", "furthermore", "in conclusion", "dive in", "game-changer", "unlock the power"
+- First lines must be a strong hook when writing LinkedIn / social posts
 
 Write the complete {content_type}:
 """
@@ -1670,7 +1815,11 @@ FORMAT REQUIREMENTS:
 
 Return ONLY the comment text. No hashtags. No titles. No lists.
 """
-        max_tok = 256 if content_type == "comment" or target_words <= 50 else 2048
+        max_tok = (
+            256
+            if content_type == "comment" or target_words <= 50
+            else min(8192, max(2048, int(target_words * 2.2)))
+        )
         return self._call_llm(
             system=(
                 "You write natural social media comments/replies. "
@@ -1816,6 +1965,8 @@ Return ONLY the comment text. No hashtags. No titles. No lists.
                 "- First line: single bold hook (no hashtags)\n"
                 "- Short paragraphs (1–3 lines) separated by blank lines\n"
                 "- No markdown headers (##) — LinkedIn renders plain text\n"
+                "- When the user asks for 800+ words, write a LONG LinkedIn post "
+                "(depth + examples), not a 500-word teaser\n"
                 "- End with 3–5 relevant hashtags on their own line"
             )
         if content_type == "email":
