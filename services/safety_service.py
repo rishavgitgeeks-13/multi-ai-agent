@@ -120,6 +120,29 @@ _NEVER_ALLOW_RE = re.compile(
     re.I,
 )
 
+# Absolute hard blocks — never bypassed by awareness framing or Extra tips.
+_ABSOLUTE_BLOCK_CATEGORIES = frozenset(
+    {
+        "child_exploitation",
+        "violent_crime_howto",
+        "self_harm",
+        "hate_discrimination",
+    }
+)
+
+# Contextual categories — may be allowed when topic+notes show clear
+# prevention / stats / awareness / defensive education intent.
+_CONTEXTUAL_BLOCK_CATEGORIES = frozenset(
+    {
+        "graphic_child_harm",
+        "sexual_violence",
+        "fraud_scam_howto",
+        "theft_howto",
+        "hacking_harm_howto",
+        "religious_conflict",
+    }
+)
+
 _HARD_BLOCK_PATTERNS: List[Tuple[str, re.Pattern[str]]] = [
     (
         "child_exploitation",
@@ -146,15 +169,13 @@ _HARD_BLOCK_PATTERNS: List[Tuple[str, re.Pattern[str]]] = [
         ),
     ),
     (
-        # Instructional / erotic depiction — NOT bare "rape statistics" / awareness
+        # Clear instructional / erotic depiction — NOT awareness/prevention articles
         "sexual_violence",
         re.compile(
             r"\b("
             r"how\s+to\s+(rape|molest|sexually\s+(assault|abuse)|force(?:d)?\s+sex)|"
-            r"how\s+to\s+(have|get)\s+sex\b|"
-            r"how\s+(an?\s+)?(owner|employer|boss).{0,40}\bsexually\s+(harass|assault|abuse)|"
             r"(write|create|generate|describe).{0,40}\b(rape|sexual\s*assault)\s+(scene|story|erotica)|"
-            r"(guide|tutorial|tips)\s+(to|on|for)\s+(rape|molest|having\s+sex)|"
+            r"(guide|tutorial|tips)\s+(to|on|for)\s+(rape|molest)|"
             r"rape\s+(someone|her|him|a\s+(woman|girl|child|kid))\b|"
             r"non[-\s]?consensual\s*sex\s+(guide|howto|how\s+to)|"
             r"force[d]?\s*sex\s+(guide|howto|how\s+to)"
@@ -200,10 +221,12 @@ _HARD_BLOCK_PATTERNS: List[Tuple[str, re.Pattern[str]]] = [
         ),
     ),
     (
+        # Requires a clear harm target — not "cybersecurity startup" education
         "hacking_harm_howto",
         re.compile(
             r"\b("
-            r"how\s+to\s+hack\b|"
+            r"how\s+to\s+hack\s+(into\s+)?(an?\s+)?"
+            r"(account|bank|wifi|password|system|network|email|phone|computer)\b|"
             r"hack\s+into\s+(an?\s+)?(account|bank|wifi|password|system|network|email)\b|"
             r"how\s+to\s+(crack|break\s+into)\s+(a\s+)?(password|wifi|account|system)\b|"
             r"how\s+to\s+(create|build|write|deploy|spread|launch)\s+(a\s+)?"
@@ -251,9 +274,26 @@ _HARD_BLOCK_PATTERNS: List[Tuple[str, re.Pattern[str]]] = [
 ]
 
 _SENSITIVE_TERMS = re.compile(
-    r"\b(rape|sexual\s*assault|child\s*abuse|molest|csam|pedophil|"
-    r"scam|fraud|hack|ransomware|steal|robbery|genocide|"
-    r"caste\s*hatred|religious\s*hatred)\b",
+    r"\b("
+    r"rape|sexual\s*assault|sexually\s+harass\w*|harass\w*|molest|"
+    r"child\s*abuse|abus\w*|assault|csam|pedophil|"
+    r"scam|fraud|hack|hacking|cybersecurity|ransomware|steal|robbery|"
+    r"nanny|nannies|childcare|caregiver|babysitter|"
+    r"genocide|caste\s*hatred|religious\s*hatred"
+    r")\b",
+    re.I,
+)
+
+# Defensive / educational signals that soften contextual hard-blocks.
+_DEFENSIVE_CONTEXT_RE = re.compile(
+    r"\b("
+    r"prevent|prevention|protect|protection|aware|awareness|safety|secure|security|"
+    r"screen|screening|vet|vetting|red\s*flags|checklist|stats?|statistics|"
+    r"cases?|incidents?|trends?|overview|education(al)?|societal|"
+    r"startup|business|guide\s+for\s+(parents|founders|smbs?)|"
+    r"how\s+to\s+(start|build|spot|avoid|protect|defend)|"
+    r"cybersecurity\s+startup|information\s+security"
+    r")\b",
     re.I,
 )
 
@@ -292,17 +332,22 @@ class SafetyService:
         self,
         user_input: str,
         *,
+        additional_instructions: str = "",
         request_id: str = "",
         session_id: str = "",
         brand: Optional[str] = None,
         content_type: str = "",
         source: str = "manager",
     ) -> Dict[str, Any]:
-        text = (user_input or "").strip()
+        topic = (user_input or "").strip()
+        notes = (additional_instructions or "").strip()
+        # Intent is judged on topic + Extra tips together (notes often carry
+        # prevention / awareness framing that the bare topic omits).
+        text = f"{topic}\n{notes}".strip() if notes else topic
         constraints = self.extract_constraints(text)
-        primary_topic = self._derive_primary_topic(text, constraints)
+        primary_topic = self._derive_primary_topic(topic or text, constraints)
 
-        if not text:
+        if not topic:
             return self._result(
                 allowed=False,
                 category="empty",
@@ -353,6 +398,27 @@ class SafetyService:
 
         category, reason = self._match_hard_block(text)
         if category:
+            # Contextual how-tos can still pass when Extra tips / topic show
+            # clear defensive or educational intent (absolute categories never).
+            if (
+                category in _CONTEXTUAL_BLOCK_CATEGORIES
+                and self._has_softening_intent(text)
+                and category not in _ABSOLUTE_BLOCK_CATEGORIES
+            ):
+                framed_topic = self._frame_safe_primary_topic(
+                    text, primary_topic, brand=brand
+                )
+                return self._result(
+                    allowed=True,
+                    category="defensive_awareness",
+                    reason=(
+                        f"Contextual '{category}' matched but topic+notes show "
+                        "prevention / awareness / educational intent — allowed"
+                    ),
+                    primary_topic=framed_topic,
+                    constraints=constraints,
+                    defensive_allow=True,
+                )
             decision = self._result(
                 allowed=False,
                 category=category,
@@ -378,7 +444,10 @@ class SafetyService:
             # Prefer educational allow when classifier is unsure but intent is stats/awareness
             if (
                 not allowed
-                and self._is_educational_or_awareness_intent(text)
+                and (
+                    self._is_educational_or_awareness_intent(text)
+                    or self._has_softening_intent(text)
+                )
                 and not _NEVER_ALLOW_RE.search(text)
             ):
                 allowed = True
@@ -411,7 +480,10 @@ class SafetyService:
                 primary_topic=primary_topic,
                 constraints=constraints,
                 defensive_allow=allowed
-                and self._is_educational_or_awareness_intent(text),
+                and (
+                    self._is_educational_or_awareness_intent(text)
+                    or self._has_softening_intent(text)
+                ),
             )
             if not allowed:
                 self.log_violation(
@@ -442,6 +514,8 @@ class SafetyService:
         *,
         primary_topic: str = "",
         user_input: str = "",
+        additional_instructions: str = "",
+        defensive_allow: bool = False,
         request_id: str = "",
         session_id: str = "",
         brand: Optional[str] = None,
@@ -458,29 +532,43 @@ class SafetyService:
                 constraints={},
             )
 
+        brief = f"{user_input or primary_topic}\n{additional_instructions or ''}".strip()
+        request_was_defensive = bool(defensive_allow) or self._has_softening_intent(
+            brief
+        )
+
         category, reason = self._match_hard_block(text)
         if category:
-            decision = self._result(
-                allowed=False,
-                category=category,
-                reason=f"Draft contains blocked content: {reason}",
-                primary_topic=primary_topic,
-                constraints={},
+            # Absolute harms always block the draft.
+            # Contextual phrases only block when the original request was NOT
+            # educational/defensive (e.g. a pure crime how-to that slipped through).
+            block_draft = category in _ABSOLUTE_BLOCK_CATEGORIES or (
+                category in _CONTEXTUAL_BLOCK_CATEGORIES and not request_was_defensive
             )
-            self.log_violation(
-                user_input=user_input or primary_topic,
-                decision=decision,
-                request_id=request_id,
-                session_id=session_id,
-                brand=brand,
-                content_type=content_type,
-                source=source,
-                stage="draft",
-                extra={"draft_preview": text[:400]},
-            )
-            return decision
+            if block_draft:
+                decision = self._result(
+                    allowed=False,
+                    category=category,
+                    reason=f"Draft contains blocked content: {reason}",
+                    primary_topic=primary_topic,
+                    constraints={},
+                )
+                self.log_violation(
+                    user_input=user_input or primary_topic,
+                    decision=decision,
+                    request_id=request_id,
+                    session_id=session_id,
+                    brand=brand,
+                    content_type=content_type,
+                    source=source,
+                    stage="draft",
+                    extra={"draft_preview": text[:400]},
+                )
+                return decision
 
-        if self._looks_like_topic_inversion(user_input or primary_topic, text):
+        if self._looks_like_topic_inversion(
+            user_input or primary_topic, text, notes=additional_instructions
+        ):
             decision = self._result(
                 allowed=False,
                 category="topic_inversion",
@@ -534,11 +622,20 @@ class SafetyService:
                         if len(nums) > 1:
                             constraints["target_word_count_min"] = min(nums)
                             constraints["target_word_count_max"] = max(nums)
-                        # Exact / micro asks are strict; ranges keep the stated band
+                        # Explicit "N words" is a hard target unless softened with
+                        # about/around/approximately/~ (those stay flexible).
+                        soft = bool(
+                            re.search(
+                                rf"\b(?:about|around|approx(?:imately)?|~)\s*{n}\s*words?\b",
+                                text,
+                                re.I,
+                            )
+                        )
                         if (
                             re.search(rf"\bexactly\s+{n}\s*words?\b", text, re.I)
                             or n <= 50
                             or len(nums) > 1
+                            or (not soft and len(nums) == 1)
                         ):
                             constraints["word_count_flexible"] = False
         return constraints
@@ -616,26 +713,50 @@ class SafetyService:
         return any(p.search(text) for p in _DEFENSIVE_ALLOW_PATTERNS)
 
     @classmethod
+    def _has_softening_intent(cls, text: str) -> bool:
+        """True when topic+notes clearly aim at education / prevention / defense."""
+        t = text or ""
+        if not t.strip():
+            return False
+        if cls._is_defensive_allow(t) or cls._is_educational_or_awareness_intent(t):
+            return True
+        return bool(_DEFENSIVE_CONTEXT_RE.search(t)) and (
+            bool(_SENSITIVE_TERMS.search(t))
+            or cls._is_childcare_sensitive(t)
+            or bool(
+                re.search(
+                    r"\b(startup|smb|business|parents?|families|agency|cybersecurity)\b",
+                    t,
+                    re.I,
+                )
+            )
+        )
+
+    @classmethod
     def _is_educational_or_awareness_intent(cls, text: str) -> bool:
         """
         Allow stats / societal education / prevention framing.
-        Does NOT allow clear harmful how-tos (those stay hard-blocked).
+        Absolute harms stay blocked; contextual how-to phrases do not
+        automatically veto education when prevention/stats framing is present.
         """
         t = text or ""
         if not t.strip() or _NEVER_ALLOW_RE.search(t):
             return False
-        # Clear instructional harm stays blocked even if "stats" appears nearby.
         howto_hit, _ = cls._match_hard_block(t)
-        if howto_hit in {
-            "sexual_violence",
-            "violent_crime_howto",
-            "fraud_scam_howto",
-            "theft_howto",
-            "hacking_harm_howto",
-            "child_exploitation",
-            "graphic_child_harm",
-            "self_harm",
-        }:
+        # Absolute categories never count as "educational"
+        if howto_hit in _ABSOLUTE_BLOCK_CATEGORIES:
+            return False
+        # Clear instructional sexual-violence how-tos stay blocked
+        if howto_hit == "sexual_violence" and not (
+            cls._has_prevention_intent(t)
+            or bool(
+                re.search(
+                    r"\b(stats?|statistics|cases?|awareness|prevention|education)\b",
+                    t,
+                    re.I,
+                )
+            )
+        ):
             return False
 
         has_edu = bool(
@@ -645,7 +766,8 @@ class SafetyService:
                 r"cases?|incidents?|reports?|reporting|prevalence|rate|"
                 r"awareness|societal|education(al)?|public\s+health|"
                 r"trends?|year[-\s]?wise|state[-\s]?wise|overview|"
-                r"what\s+are\s+the\s+(stats|statistics|figures|numbers)"
+                r"what\s+are\s+the\s+(stats|statistics|figures|numbers)|"
+                r"startup|guide|practical\s+guide"
                 r")\b",
                 t,
                 re.I,
@@ -659,6 +781,15 @@ class SafetyService:
         if has_edu and (has_sensitive or has_prevention):
             return True
         if has_prevention and has_sensitive:
+            return True
+        # Cybersecurity / scam education without needing the word "abuse"
+        if has_edu and bool(
+            re.search(
+                r"\b(cybersecurity|phishing|scam|fraud|startup|information\s+security)\b",
+                t,
+                re.I,
+            )
+        ):
             return True
         return False
 
@@ -809,14 +940,33 @@ class SafetyService:
         return cleaned[:300] if cleaned else text[:300]
 
     @staticmethod
-    def _looks_like_topic_inversion(user_topic: str, draft: str) -> bool:
-        topic = (user_topic or "").lower()
+    def _looks_like_topic_inversion(
+        user_topic: str, draft: str, notes: str = ""
+    ) -> bool:
+        topic = f"{user_topic or ''}\n{notes or ''}".lower()
         body = (draft or "").lower()
-        if not topic or not body:
+        if not topic.strip() or not body:
             return False
+
+        # Prevention / case-study articles about nanny abuse of children are ON-topic
+        # for Kinvo-style briefs — do not treat them as inversion.
+        if re.search(
+            r"\b(cases?|stats?|statistics|prevention|awareness|red\s*flags|"
+            r"screen|screening|india|state[-\s]?wise|year[-\s]?wise)\b",
+            topic,
+        ) and re.search(
+            r"\b(nanny|nannies|childcare|caregiver|babysitter)\b",
+            topic,
+        ):
+            return False
+
         victim_caregiver = bool(
             re.search(r"\b(nanny|caregiver|babysitter|maid|domestic\s+worker)\b", topic)
             and re.search(r"\b(assault|abuse|harass|rape|molest|victim)\b", topic)
+            and re.search(
+                r"\b(owner|employer|boss|client|parent)\b",
+                topic,
+            )
         )
         draft_caregiver_abuses_child = bool(
             re.search(
@@ -839,32 +989,32 @@ class SafetyService:
             return None
 
         system = (
-            "You are a strict content-policy classifier for a brand content platform. "
+            "You are a content-policy classifier for a brand content platform. "
             "Return ONLY valid JSON with keys: "
             "allowed (bool), category (string), reason (string), primary_topic (string).\n"
-            "Judge INTENT, not bare keywords.\n"
-            "BLOCK (allowed=false) clear harmful how-tos / non-educational asks, including: "
-            "'how to rape', 'how to have sex', 'how to scam people', crime/fraud/theft/hacking "
-            "instructionals, CSAM/child-sex content, graphic child-harm retellings for "
-            "entertainment, hate/discrimination, religion content that inflames conflict, "
+            "Judge INTENT of the FULL request (topic + any Extra tips / notes), "
+            "not bare keywords.\n"
+            "BLOCK (allowed=false) only clear harmful how-tos / non-educational asks: "
+            "'how to rape', crime/fraud/theft/hacking instructionals aimed at causing "
+            "harm, CSAM/child-sex content, graphic child-harm for entertainment, "
+            "hate/discrimination, religion content that inflames conflict, "
             "self-harm instructions.\n"
             "ALLOW (allowed=true) educational / awareness / prevention intent, including: "
-            "statistics and societal education (e.g. 'stats of rape cases in India'); "
-            "awareness and prevention articles that cite high-level case data; "
-            "phishing/scam/cyber protection; parent childcare safety / nanny screening / "
-            "red flags; brand prevention angles (e.g. how a verified agency helps avoid "
-            "incidents); NRI fraud awareness; balanced AI bubble education. "
-            "Do not invent geography — keep whatever market the user named "
-            "(India, US, UK, etc.). Never assume a market from the brand alone.\n"
-            "CRITICAL for primary_topic when allowed: preserve the user's actual request "
-            "(geography, years, data asks, brand angle). Do NOT replace it with a generic "
-            "screening-only essay. You may append a short safety note, but keep the core ask."
+            "statistics and societal education; awareness articles that cite high-level "
+            "case data; phishing/scam/cyber protection; cybersecurity startups; "
+            "parent childcare safety / nanny screening / red flags; brand prevention "
+            "angles; NRI fraud awareness; balanced AI bubble education; "
+            "topics that mention abuse/harassment when Extra tips ask for prevention, "
+            "stats, or parent education (no graphic how-to).\n"
+            "Do not invent geography — keep whatever market the user named. "
+            "Never assume a market from the brand alone.\n"
+            "CRITICAL for primary_topic when allowed: preserve the user's actual request."
         )
-        user = f"Classify this content request:\n\n{text}"
+        user = f"Classify this content request (topic + notes):\n\n{text}"
 
         try:
             resp = self._openai.chat.completions.create(
-                model=settings.OPENAI_MODEL,
+                model=settings.model_for_helpers(),
                 max_tokens=400,
                 temperature=0,
                 messages=[
