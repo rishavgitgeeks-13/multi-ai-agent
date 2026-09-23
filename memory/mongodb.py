@@ -6,6 +6,7 @@ workflow run snapshots, and session metadata.
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote_plus
 
 from pymongo import ASCENDING, DESCENDING, MongoClient
 from pymongo.collection import Collection
@@ -14,6 +15,31 @@ from pymongo.database import Database
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_mongodb_uri(uri: str) -> str:
+    """
+    Percent-encode username/password in a Mongo URI.
+
+    Passwords with reserved characters (e.g. `@`, `:`, `/`) break URI parsing
+    unless escaped with urllib.parse.quote_plus (RFC 3986).
+    Uses rsplit('@', 1) so an `@` inside the password is not treated as the
+    host separator.
+    """
+    raw = (uri or "").strip()
+    if not raw or "://" not in raw:
+        return raw
+    scheme, rest = raw.split("://", 1)
+    if "@" not in rest:
+        return raw
+    creds, hostpart = rest.rsplit("@", 1)
+    if ":" not in creds:
+        return raw
+    user, password = creds.split(":", 1)
+    # Avoid double-encoding already-escaped credentials
+    if "%" in user or "%" in password:
+        return raw
+    return f"{scheme}://{quote_plus(user)}:{quote_plus(password)}@{hostpart}"
 
 
 # ==========================================================================
@@ -31,11 +57,19 @@ class MongoDBClient:
     def __new__(cls) -> "MongoDBClient":
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-            cls._instance._connect()
+            try:
+                cls._instance._connect()
+            except Exception:
+                # Do not leave a half-initialized singleton that blocks retries
+                cls._instance = None
+                raise
         return cls._instance
 
     def _connect(self) -> None:
-        self._client = MongoClient(settings.MONGODB_URI)
+        uri = _safe_mongodb_uri(settings.MONGODB_URI or "")
+        if not uri:
+            raise ValueError("MONGODB_URI is not configured")
+        self._client = MongoClient(uri)
         self._db = self._client[settings.MONGODB_DATABASE]
         self._ensure_indexes()
         logger.info("MongoDB connected — database: %s", settings.MONGODB_DATABASE)
@@ -64,6 +98,14 @@ class MongoDBClient:
         sessions.create_index([("session_id", ASCENDING)], unique=True)
         sessions.create_index([("last_active", DESCENDING)])
 
+        # ---- per-user chat history (Streamlit sidebar) --------------------
+        chat: Collection = self._db.user_chat_turns
+        chat.create_index([("username", ASCENDING), ("created_at", ASCENDING)])
+        chat.create_index([("created_at", DESCENDING)])
+
+        # ---- app users (login / signup) -----------------------------------
+        users: Collection = self._db.users
+        users.create_index("username", unique=True)
 
 
 # ==========================================================================
