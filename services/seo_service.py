@@ -91,7 +91,7 @@ SCORE_WEIGHTS: Dict[str, float] = {
 # Maximum characters from corpus sent to the LLM to avoid token overflow.
 _MAX_CORPUS_CHARS: int = 4_000
 
-DEFAULT_LLM_MODEL: str = settings.OPENAI_MODEL
+DEFAULT_LLM_MODEL: str = settings.OPENAI_MODEL_LIGHT or settings.OPENAI_MODEL
 
 
 # ---------------------------------------------------------------------------
