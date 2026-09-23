@@ -59,8 +59,8 @@ if "main_view" not in st.session_state:
     st.session_state.main_view = "create"  # create | history
 if "is_admin" not in st.session_state:
     st.session_state.is_admin = False
-API_BASE_URL = "http://54.218.34.106:9000"
-#API_BASE_URL = "http://localhost:8000"
+#API_BASE_URL = "http://54.218.34.106:9000"
+API_BASE_URL = "http://localhost:8000"
 
 # Always point at the deployed API (do not let an old empty session value stick).
 st.session_state.api_url = API_BASE_URL
@@ -172,6 +172,7 @@ def fetch_user_history(username: str, limit: int = 100) -> List[Dict]:
     """Load persisted per-user chat history (survives logout/login)."""
     if not username:
         return []
+    turns: List[Dict] = []
     try:
         resp = requests.get(
             f"{st.session_state.api_url}/api/chat/users/{username}/history",
@@ -179,10 +180,12 @@ def fetch_user_history(username: str, limit: int = 100) -> List[Dict]:
             timeout=8,
         )
         if resp.status_code == 200:
-            return resp.json().get("turns") or []
+            turns = resp.json().get("turns") or []
     except Exception:
-        pass
-    # Direct service fallback when API is down but Mongo/file is local
+        turns = []
+    if turns:
+        return turns
+    # Direct service fallback when API is down / empty (local Mongo or file)
     try:
         from services.chat_history_service import get_user_history
 
@@ -216,7 +219,7 @@ def _persist_turn_remote(
     content: str,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Save a turn for the logged-in user (API → Mongo/file)."""
+    """Save a turn for the logged-in user (API first, local dual-write fallback)."""
     username = (st.session_state.get("username") or "").strip()
     if not username or not content:
         return
@@ -227,27 +230,41 @@ def _persist_turn_remote(
         "metadata": metadata or {},
         "session_id": st.session_state.get("session_id") or "",
     }
+    api_ok = False
     try:
-        requests.post(
+        resp = requests.post(
             f"{st.session_state.api_url}/api/chat/turns",
             json=payload,
-            timeout=8,
+            timeout=20,
         )
-        return
+        if resp.status_code == 200:
+            api_ok = bool((resp.json() or {}).get("ok"))
     except Exception:
-        pass
+        api_ok = False
+
+    if api_ok:
+        st.session_state.pop("_history_save_error", None)
+        return
+
+    # API down / rejected — persist locally (Mongo + file)
     try:
         from services.chat_history_service import add_turn
 
-        add_turn(
+        local_ok = add_turn(
             username=username,
             role=role,
             content=content,
             metadata=metadata,
             session_id=st.session_state.get("session_id") or "",
         )
-    except Exception:
-        pass
+        if local_ok:
+            st.session_state.pop("_history_save_error", None)
+        else:
+            st.session_state["_history_save_error"] = (
+                "Could not save this chat to history."
+            )
+    except Exception as exc:
+        st.session_state["_history_save_error"] = f"History save failed: {exc}"
 
 
 def append_chat_turn(
@@ -344,6 +361,8 @@ def record_generation(
         "username": st.session_state.get("username") or "",
         "hashtags": hashtags,
     }
+    # Sidebar renders before form handlers on this run — rerun so "Your chats" updates
+    st.session_state["_pending_history_rerun"] = True
     st.session_state.main_view = "create"  # stay on create after generate
 
 
@@ -952,6 +971,20 @@ def display_metadata_panel(metadata: Dict, result: Dict, workflow_type: str = ""
             st.markdown("#### Hashtags")
             st.markdown(" ".join(str(h) for h in hashtags))
 
+    citations = final.get("citations") or []
+    if citations and workflow_type != "email":
+        st.markdown("#### Sources / Citations")
+        for i, cit in enumerate(citations[:12], start=1):
+            if isinstance(cit, dict):
+                label = str(cit.get("formatted") or cit.get("text") or "Source").strip()
+                url = str(cit.get("url") or "").strip()
+                if url:
+                    st.markdown(f"{i}. [{label}]({url})")
+                else:
+                    st.markdown(f"{i}. {label}")
+            else:
+                st.markdown(f"{i}. {cit}")
+
 
 def display_seo_analysis_panel(seo_analysis: Dict) -> None:
     st.markdown("#### Technical SEO Checklist")
@@ -1076,6 +1109,22 @@ def display_result(result: Dict, workflow_type: str) -> None:
             if hashtags and workflow_type != "email":
                 st.divider()
                 st.markdown("**Hashtags:** " + " ".join(str(h) for h in hashtags))
+            citations = final.get("citations") or []
+            if citations and workflow_type != "email":
+                st.divider()
+                st.markdown("**Sources / Citations**")
+                for i, cit in enumerate(citations[:12], start=1):
+                    if isinstance(cit, dict):
+                        label = str(
+                            cit.get("formatted") or cit.get("text") or "Source"
+                        ).strip()
+                        url = str(cit.get("url") or "").strip()
+                        if url:
+                            st.markdown(f"{i}. [{label}]({url})")
+                        else:
+                            st.markdown(f"{i}. {label}")
+                    else:
+                        st.markdown(f"{i}. {cit}")
             st.divider()
             col1, col2 = st.columns([1, 4])
             col1.download_button(
@@ -1237,6 +1286,9 @@ with st.sidebar:
         st.caption(f"@{who_label} · Admin")
     else:
         st.caption(f"@{who_label}")
+
+    if st.session_state.get("_history_save_error"):
+        st.warning(st.session_state["_history_save_error"])
 
     if st.button("New chat", key="nav_new_gen", use_container_width=True, type="primary"):
         st.session_state.main_view = "create"
@@ -1712,3 +1764,8 @@ with tab_social:
     if "social" in st.session_state.results:
         st.divider()
         display_result(st.session_state.results["social"], "social")
+
+# After a successful generate, rerun once so the sidebar "Your chats" list updates
+# (sidebar renders before form handlers on the submit run).
+if st.session_state.pop("_pending_history_rerun", False):
+    st.rerun()
