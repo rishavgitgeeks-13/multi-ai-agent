@@ -21,9 +21,29 @@ class Settings(BaseSettings):
     # LLM Providers
     # ==========================================================
     OPENAI_API_KEY: str
+    # Premium model — Writer only (draft / revise / enrich / outline).
+    # Quality of published copy depends on this.
     OPENAI_MODEL: str = "gpt-4.1"
+    # Cheaper model — SEO, hashtags, citations, review scoring, safety.
+    # ~5× cheaper than gpt-4.1; strong enough for structured JSON tasks.
+    OPENAI_MODEL_LIGHT: str = "gpt-4.1-mini"
+    # Optional override for Review only. Empty = use OPENAI_MODEL_LIGHT.
+    # Set to gpt-4.1 if review scoring quality is not acceptable.
+    OPENAI_MODEL_REVIEW: str | None = None
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
     OPENAI_EMBEDDING_DIMENSION: int = 1536
+
+    def model_for_writer(self) -> str:
+        return (self.OPENAI_MODEL or "gpt-4.1").strip()
+
+    def model_for_helpers(self) -> str:
+        return (self.OPENAI_MODEL_LIGHT or self.OPENAI_MODEL or "gpt-4.1-mini").strip()
+
+    def model_for_review(self) -> str:
+        override = (self.OPENAI_MODEL_REVIEW or "").strip()
+        if override:
+            return override
+        return self.model_for_helpers()
 
     # ==========================================================
     # Vector Database
@@ -74,7 +94,7 @@ class Settings(BaseSettings):
     # ==========================================================
     # Agent Configuration
     # ==========================================================
-    MAX_REVIEW_ITERATIONS: int = 3
+    MAX_REVIEW_ITERATIONS: int = 1
     MAX_RESEARCH_RESULTS: int = 10
     DEFAULT_TEMPERATURE: float = 0.2
     MAX_TOKENS: int = 4096
