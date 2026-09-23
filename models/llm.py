@@ -49,14 +49,14 @@ class LLMProvider:
             if not settings.OPENAI_API_KEY:
                 raise ValueError("OPENAI_API_KEY is not configured.")
             cls._chat_llm = ChatOpenAI(
-                model=settings.OPENAI_MODEL,
+                model=settings.model_for_writer(),
                 api_key=settings.OPENAI_API_KEY,
                 temperature=settings.DEFAULT_TEMPERATURE,
                 max_tokens=settings.MAX_TOKENS,
             )
             logger.info(
                 "ChatOpenAI initialized | model=%s | temperature=%.1f | max_tokens=%d",
-                settings.OPENAI_MODEL,
+                settings.model_for_writer(),
                 settings.DEFAULT_TEMPERATURE,
                 settings.MAX_TOKENS,
             )
@@ -79,8 +79,10 @@ class LLMProvider:
                 raise ValueError("OPENAI_API_KEY is not configured.")
             cls._openai = OpenAI(api_key=settings.OPENAI_API_KEY)
             logger.info(
-                "OpenAI SDK client initialized | model=%s",
-                settings.OPENAI_MODEL,
+                "OpenAI SDK client initialized | writer=%s | helpers=%s | review=%s",
+                settings.model_for_writer(),
+                settings.model_for_helpers(),
+                settings.model_for_review(),
             )
         return cls._openai
 
@@ -101,11 +103,12 @@ class LLMProvider:
         One-shot helper for services that need a plain text response.
 
         Returns the text content of the first choice.
-        Falls back to settings defaults for model / temperature / max_tokens.
+        Defaults to the helper (light) model unless `model` is passed.
+        Writer paths should call with model=settings.model_for_writer().
         """
         client = cls.get_openai_client()
         response = client.chat.completions.create(
-            model=model or settings.OPENAI_MODEL,
+            model=model or settings.model_for_helpers(),
             max_tokens=max_tokens or settings.MAX_TOKENS,
             temperature=temperature if temperature is not None else 0.0,
             messages=[
