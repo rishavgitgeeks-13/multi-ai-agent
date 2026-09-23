@@ -19,7 +19,7 @@ langsmith
 pydantic-settings
 youtube-transcript-api
 openai
-pinecone-client
+pinecone
 numpy
 rank-bm25
 scikit-learn
