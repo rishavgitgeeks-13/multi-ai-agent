@@ -10,7 +10,7 @@ Orchestrates the 5-agent pipeline for social media content:
 Social content is short-form and engagement-driven. This workflow:
   1. Maps the caller's `platform` choice to the correct content_type.
   2. Injects platform-specific formatting instructions into writer prompts.
-  3. Limits max revisions to 2 (social content converges quickly).
+  3. Limits max revisions to 1 (social content converges quickly).
   4. Post-processes the draft to extract:
        - Hashtags (from final_output or trailing hashtag lines in the draft)
        - Character count (for X platform validation)
@@ -195,7 +195,7 @@ class SocialWorkflow:
         language: str = "English",
         additional_instructions: str = "",
         session_id: Optional[str] = None,
-        max_revisions: int = 2,
+        max_revisions: int = 1,
     ) -> Dict[str, Any]:
         """
         Run the social media content workflow.
@@ -210,7 +210,7 @@ class SocialWorkflow:
         language              : "English" (default) | "Hindi".
         additional_instructions: Extra writer guidance appended after platform rules.
         session_id            : If provided, saves workflow turn to ConversationMemory.
-        max_revisions         : Review cycles (default 2 — social content is short).
+        max_revisions         : Review cycles (default 1 — social content is short).
 
         Returns
         -------
