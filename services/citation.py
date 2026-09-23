@@ -60,7 +60,7 @@ class CitationService:
             api_key=settings.OPENAI_API_KEY
         )
 
-        self._model = settings.OPENAI_MODEL
+        self._model = settings.model_for_helpers()
         self._temperature = 0.0  # citations need deterministic output
 
         logger.info(
