@@ -475,15 +475,44 @@ def _inject_app_chrome_css() -> None:
             box-shadow: none;
             white-space: normal;
         }
+        [data-testid="stSidebar"] .stButton > button p,
+        [data-testid="stSidebar"] .stButton > button span,
+        [data-testid="stSidebar"] .stButton > button div {
+            color: inherit !important;
+        }
         [data-testid="stSidebar"] .stButton > button:hover {
             background: var(--ei-accent-soft);
             border-color: var(--ei-accent-border);
         }
+        /* Primary (New chat / active conversation): force white text on teal */
         [data-testid="stSidebar"] .stButton > button[kind="primary"],
-        [data-testid="stSidebar"] .stButton > button[data-testid="baseButton-primary"] {
+        [data-testid="stSidebar"] .stButton > button[data-testid="baseButton-primary"],
+        [data-testid="stSidebar"] button[kind="primary"],
+        [data-testid="stSidebar"] button[data-testid="baseButton-primary"] {
             background: var(--ei-accent) !important;
             border-color: var(--ei-accent) !important;
             color: #ffffff !important;
+            font-weight: 650 !important;
+        }
+        [data-testid="stSidebar"] .stButton > button[kind="primary"] *,
+        [data-testid="stSidebar"] .stButton > button[data-testid="baseButton-primary"] *,
+        [data-testid="stSidebar"] button[kind="primary"] *,
+        [data-testid="stSidebar"] button[data-testid="baseButton-primary"] *,
+        [data-testid="stSidebar"] .stButton > button[kind="primary"] p,
+        [data-testid="stSidebar"] .stButton > button[data-testid="baseButton-primary"] p {
+            color: #ffffff !important;
+            -webkit-text-fill-color: #ffffff !important;
+        }
+        [data-testid="stSidebar"] .stButton > button[kind="primary"]:hover,
+        [data-testid="stSidebar"] .stButton > button[data-testid="baseButton-primary"]:hover {
+            background: #0d9488 !important;
+            border-color: #0d9488 !important;
+            color: #ffffff !important;
+        }
+        [data-testid="stSidebar"] .stButton > button[kind="primary"]:hover *,
+        [data-testid="stSidebar"] .stButton > button[data-testid="baseButton-primary"]:hover * {
+            color: #ffffff !important;
+            -webkit-text-fill-color: #ffffff !important;
         }
         [data-testid="stSidebar"] hr {
             border-color: var(--ei-line);
@@ -528,6 +557,11 @@ def _inject_app_chrome_css() -> None:
             border-color: var(--ei-accent) !important;
             color: #ffffff !important;
             box-shadow: 0 4px 14px rgba(15, 118, 110, 0.28);
+        }
+        div[data-testid="stTabs"] button[aria-selected="true"] *,
+        div[data-testid="stTabs"] button[aria-selected="true"] p {
+            color: #ffffff !important;
+            -webkit-text-fill-color: #ffffff !important;
         }
         div[data-testid="stTabs"] [data-baseweb="tab-highlight"],
         div[data-testid="stTabs"] [data-baseweb="tab-border"] {
