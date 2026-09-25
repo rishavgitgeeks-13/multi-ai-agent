@@ -24,12 +24,97 @@ from services.formatter import Formatter
 from services.json_builder import JSONBuilder
 from services.writer_service import WriterService
 from services.safety_service import safety_service
+from services.citation import CitationService
 
 
 writer_service = WriterService()
 metadata_service = MetadataService()
 formatter = Formatter()
 json_builder = JSONBuilder()
+_citation_service = None
+
+
+def _get_citation_service() -> CitationService:
+    global _citation_service
+    if _citation_service is None:
+        _citation_service = CitationService()
+    return _citation_service
+
+
+def _ensure_strategy_citations(strategy: dict, research_data: dict, user_input: str) -> dict:
+    """
+    Guarantee strategy['citations'] is populated before JSONBuilder.
+
+    CitationService can fail or return [] even when research found usable
+    sources/documents — without this, ## Sources never appears in the article.
+    """
+    out = dict(strategy or {})
+    existing = out.get("citations") or []
+    if isinstance(existing, list) and len(existing) > 0:
+        return out
+
+    research = research_data if isinstance(research_data, dict) else {}
+    cites: list = []
+    try:
+        cites = _get_citation_service().run(
+            research_data=research,
+            user_input=user_input or "",
+        ) or []
+    except Exception:
+        cites = []
+
+    if not cites:
+        cites = _citations_from_research_fallback(research)
+
+    out["citations"] = cites
+    return out
+
+
+def _citations_from_research_fallback(research: dict) -> list:
+    """Minimal citation list from sources / documents when CitationService is empty."""
+    seen: set[str] = set()
+    out: list = []
+
+    def _add(title: str, url: str) -> None:
+        title = (title or "").strip()
+        url = (url or "").strip()
+        if not title and not url:
+            return
+        key = (url or title).lower()
+        if key in seen:
+            return
+        seen.add(key)
+        label = title or url
+        out.append(
+            {
+                "text": label,
+                "url": url,
+                "type": "web",
+                "formatted": f"{label} — {url}" if url and url not in label else label,
+            }
+        )
+
+    for src in research.get("sources") or []:
+        if isinstance(src, dict):
+            _add(
+                str(src.get("title") or src.get("name") or ""),
+                str(src.get("url") or src.get("link") or ""),
+            )
+        elif isinstance(src, str):
+            _add(src, src if src.startswith("http") else "")
+
+    if len(out) < 3:
+        for doc in research.get("documents") or []:
+            if not isinstance(doc, dict):
+                continue
+            _add(
+                str(doc.get("title") or ""),
+                str(doc.get("url") or doc.get("source_url") or ""),
+            )
+            if len(out) >= 12:
+                break
+
+    return out[:12]
 
 
 def writer_node(state: ContentState) -> ContentState:
@@ -108,6 +193,14 @@ def writer_node(state: ContentState) -> ContentState:
         draft=draft,
         strategy=strategy,
     )
+
+    # Ensure Sources can be appended even if Strategy's CitationService returned []
+    strategy = _ensure_strategy_citations(
+        strategy,
+        state.get("research_data") or {},
+        state.get("user_input") or "",
+    )
+    state["strategy"] = strategy
 
     final_output = json_builder.run(
         content=formatted_output,
