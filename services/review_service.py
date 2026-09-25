@@ -36,7 +36,7 @@ PASS threshold : score >= 95
 import json
 import logging
 import re
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from openai import OpenAI
 from config.settings import settings
@@ -206,7 +206,9 @@ class ReviewService:
             )
 
         # Rule-based pre-checks (fast, no LLM)
-        pre_check_issues = self._run_pre_checks(draft, strategy)
+        pre_check_issues = self._run_pre_checks(
+            draft, strategy, brand_context=brand_context, primary_topic=brief
+        )
         if brief:
             fidelity_issue = self._topic_fidelity_issue(brief, draft)
             if fidelity_issue:
@@ -278,6 +280,34 @@ class ReviewService:
             needs_revision = True
             status = "FAIL"
 
+        # Publishing QC gates — force a rewrite when these fire
+        qc_force = [
+            i
+            for i in pre_check_issues
+            if any(
+                key in str(i)
+                for key in (
+                    "TEMPORAL_MISMATCH",
+                    "BRAND_CTA_MISMATCH",
+                    "DUPLICATE_HASHTAGS",
+                    "ABSOLUTE_CLAIM",
+                    "HEADING_CLAIM_MISMATCH",
+                )
+            )
+        ]
+        if qc_force:
+            needs_revision = True
+            status = "FAIL"
+            dim_scores["factual_grounding"] = min(
+                int(dim_scores.get("factual_grounding", 50)),
+                78,
+            )
+            dim_scores["brand_alignment"] = min(
+                int(dim_scores.get("brand_alignment", 50)),
+                82,
+            )
+            score = self._calculate_score(dim_scores)
+
         rewrite_instruction = ""
         if needs_revision:
             rewrite_instruction = (llm_result.get("rewrite_instruction") or "").strip()
@@ -295,6 +325,12 @@ class ReviewService:
                     + ", ".join(f'"{t}"' for t in found_tells[:8])
                     + ". Never start sentences with Moreover, Furthermore, Additionally, "
                     "or In conclusion. Improve natural_voice above 75."
+                ).strip()
+            if qc_force:
+                rewrite_instruction = (
+                    rewrite_instruction
+                    + "\nPUBLISHING QC FIXES (mandatory):\n- "
+                    + "\n- ".join(qc_force[:8])
                 ).strip()
 
         review = {
@@ -319,7 +355,13 @@ class ReviewService:
     # Rule-based pre-checks
     # ------------------------------------------------------------------
 
-    def _run_pre_checks(self, draft: str, strategy: Dict) -> List[str]:
+    def _run_pre_checks(
+        self,
+        draft: str,
+        strategy: Dict,
+        brand_context: Optional[Dict] = None,
+        primary_topic: str = "",
+    ) -> List[str]:
         """
         Fast, rule-based checks that run before the LLM call.
         Returns a list of issue strings (empty = all passed).
@@ -455,9 +497,43 @@ class ReviewService:
 
         # CTA check (skip for micro — full CTA often won't fit the budget)
         if not micro_request:
-            cta = strategy.get("cta") or brand_context_from_strategy(strategy)
+            brand = brand_context or {}
+            cta = str(
+                strategy.get("cta")
+                or brand.get("cta")
+                or brand_context_from_strategy(strategy)
+                or ""
+            ).strip()
+            display_name = str(brand.get("display_name") or "").strip()
             if cta and cta.lower() not in draft_lower:
-                issues.append("CTA text not found in the content.")
+                # Accept brand-name variants of the CTA (e.g. "Contact MPM…")
+                brand_cta_ok = bool(
+                    display_name
+                    and display_name.lower() in draft_lower
+                    and re.search(
+                        r"\b(contact|book|schedule|call|reach)\b",
+                        draft_lower[-900:],
+                    )
+                )
+                if not brand_cta_ok:
+                    issues.append(
+                        f"BRAND_CTA_MISMATCH: CTA text not found near the close. "
+                        f"End with the brand CTA verbatim: \"{cta}\"."
+                    )
+            elif display_name and content_type in ("blog", "article"):
+                # Closing CTA must name the brand, not a generic advisor label
+                closing = draft[-1200:]
+                generic = re.search(
+                    r"contact\s+(a\s+)?(trusted\s+)?property\s+advisor\b",
+                    closing,
+                    re.I,
+                )
+                if generic and display_name.lower() not in closing.lower():
+                    issues.append(
+                        f"BRAND_CTA_MISMATCH: Closing CTA is generic "
+                        f"(\"Contact Property Advisor\") but brand is "
+                        f"\"{display_name}\". Use the brand name in the final CTA."
+                    )
 
         # AI-tell phrase check (natural voice)
         found_tells = self._detect_ai_tells(draft_lower)
@@ -476,6 +552,108 @@ class ReviewService:
                     "Sentence rhythm is too uniform (robotic). Vary sentence "
                     "length — mix short punchy sentences with longer ones."
                 )
+
+        # ---- Publishing QC (temporal, absolute claims, duplicates, headings) ----
+        if content_type in ("blog", "article") and not micro_request:
+            issues.extend(
+                self._publishing_qc_issues(
+                    draft=draft,
+                    primary_topic=primary_topic or "",
+                )
+            )
+
+        return issues
+
+    def _publishing_qc_issues(self, draft: str, primary_topic: str = "") -> List[str]:
+        """Rule-based publishing QC: temporal, absolute claims, hashtags, headings."""
+        issues: List[str] = []
+        text = draft or ""
+
+        # 1) Duplicate hashtag footers
+        hashtag_blocks = re.findall(r"(?im)^Hashtags:\s*.+$", text)
+        if len(hashtag_blocks) >= 2:
+            issues.append(
+                "DUPLICATE_HASHTAGS: Hashtag footer appears more than once. "
+                "Keep a single Hashtags: line at the end."
+            )
+
+        # 2) Temporal mismatch — article year vs later source years
+        article_years = set()
+        h1 = re.search(r"^#\s+(.+)$", text, re.M)
+        title_blob = " ".join(
+            p for p in [primary_topic, h1.group(1) if h1 else ""] if p
+        )
+        for y in re.findall(r"\b(20[2-3]\d)\b", title_blob):
+            article_years.add(int(y))
+        # Also treat "… Guide 2026" patterns in first H1 as article year
+        if h1:
+            for y in re.findall(r"\b(20[2-3]\d)\b", h1.group(1)):
+                article_years.add(int(y))
+
+        if article_years:
+            article_year = min(article_years)
+            # Sources cited as "(2027)" or "Infra (2027)" ahead of article year
+            future_hits = []
+            for m in re.finditer(
+                r"([A-Za-z][A-Za-z0-9 .&/-]{2,60})\((20[2-3]\d)\)",
+                text,
+            ):
+                src_year = int(m.group(2))
+                if src_year > article_year:
+                    future_hits.append(f"{m.group(1).strip()} ({src_year})")
+            if future_hits:
+                issues.append(
+                    "TEMPORAL_MISMATCH: Article is framed for "
+                    f"{article_year} but cites later-dated sources "
+                    f"({'; '.join(future_hits[:4])}). Remove/replace those "
+                    f"citations or reframe the article year to match evidence."
+                )
+
+        # 3) Absolute / over-promising marketing language
+        absolute_patterns = [
+            (r"\brisk[-\s]?free\b", "risk-free"),
+            (r"\bguaranteed?\b", "guaranteed"),
+            (r"\bunmatched\b", "unmatched"),
+            (r"\bmost secure\b", "most secure"),
+            (r"\bmore favorable than ever\b", "more favorable than ever"),
+            (r"\bcut down the risk of\b", "cut down the risk of"),
+            (r"\bwill (?:increase|deliver|guarantee)\b", "will increase/deliver"),
+            (r"\bbest (?:investment|choice|opportunity) (?:ever|in the market)\b", "best … ever"),
+        ]
+        abs_hits = []
+        for pat, label in absolute_patterns:
+            if re.search(pat, text, re.I):
+                abs_hits.append(label)
+        if abs_hits:
+            issues.append(
+                "ABSOLUTE_CLAIM: Soften over-absolute language "
+                f"({', '.join(abs_hits[:5])}). Qualify with evidence "
+                "(e.g. 'greater oversight… although project-specific risks remain')."
+            )
+
+        # 4) Heading promises "predictions" without predictive content
+        for hm in re.finditer(r"^##\s+(.+)$", text, re.M):
+            heading = hm.group(1).strip()
+            if re.search(r"\bpredictions?\b", heading, re.I):
+                # Look ahead until next H2
+                start = hm.end()
+                nxt = re.search(r"^##\s+", text[start:], re.M)
+                body = text[start : start + (nxt.start() if nxt else 1200)]
+                has_forward = bool(
+                    re.search(
+                        r"\b(forecast|projected|expected to|by 20\d\d|outlook|"
+                        r"price prediction|will reach|estimated)\b",
+                        body,
+                        re.I,
+                    )
+                )
+                if not has_forward:
+                    issues.append(
+                        "HEADING_CLAIM_MISMATCH: Heading promises "
+                        f"\"{heading}\" but the section lacks forward-looking "
+                        "estimates. Rename to 'Price Trends' or add credible "
+                        "forecasts with attribution."
+                    )
 
         return issues
 
