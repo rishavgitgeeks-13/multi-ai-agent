@@ -59,8 +59,8 @@ if "main_view" not in st.session_state:
     st.session_state.main_view = "create"  # create | history
 if "is_admin" not in st.session_state:
     st.session_state.is_admin = False
-#API_BASE_URL = "http://54.218.34.106:9000"
-API_BASE_URL = "http://localhost:8000"
+API_BASE_URL = "http://54.218.34.106:9000"
+#API_BASE_URL = "http://localhost:8000"
 
 # Always point at the deployed API (do not let an old empty session value stick).
 st.session_state.api_url = API_BASE_URL
