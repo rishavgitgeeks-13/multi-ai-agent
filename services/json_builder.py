@@ -30,6 +30,8 @@ It is a pure assembly / projection layer.
 import logging
 from typing import Any, Dict, List
 
+import re
+
 logger = logging.getLogger(__name__)
 
 
@@ -112,12 +114,19 @@ class JSONBuilder:
             target_n = 0
         micro = target_n > 0 and target_n <= 75
 
+        # Hashtags: Writer may already append a footer; strip ALL trailing
+        # "Hashtags:" blocks then append at most ONE clean footer from strategy.
+        markdown = re.sub(
+            r"(?:\n+Hashtags:\s*[^\n]+)+\s*$",
+            "",
+            markdown,
+            flags=re.I,
+        )
         if (
             hashtags
             and content_type not in ("email", "comment")
             and platform not in ("email", "comment")
             and not micro
-            and not any(tag.lower() in markdown.lower() for tag in hashtags[:2])
         ):
             tag_line = " ".join(hashtags)
             markdown = f"{markdown.rstrip()}\n\nHashtags: {tag_line}\n"
