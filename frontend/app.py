@@ -1106,11 +1106,21 @@ def display_result(result: Dict, workflow_type: str) -> None:
                 or (result.get("social_meta") or {}).get("hashtags")
                 or []
             )
-            if hashtags and workflow_type != "email":
+            # Avoid duplicate hashtag block when JSONBuilder already appended them
+            if (
+                hashtags
+                and workflow_type != "email"
+                and "Hashtags:" not in (markdown or "")
+            ):
                 st.divider()
                 st.markdown("**Hashtags:** " + " ".join(str(h) for h in hashtags))
             citations = final.get("citations") or []
-            if citations and workflow_type != "email":
+            if (
+                citations
+                and workflow_type != "email"
+                and "## Sources" not in (markdown or "")
+                and "## References" not in (markdown or "")
+            ):
                 st.divider()
                 st.markdown("**Sources / Citations**")
                 for i, cit in enumerate(citations[:12], start=1):
