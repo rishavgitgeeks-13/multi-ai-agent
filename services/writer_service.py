@@ -112,12 +112,18 @@ class WriterService:
         )
 
         self._model = settings.model_for_writer()
-        self._temperature = settings.DEFAULT_TEMPERATURE
+        # Slightly higher than DEFAULT (often 0.2) so drafts vary rhythm
+        # and sound less template-like; helpers/review stay low-temp elsewhere.
+        self._temperature = max(float(settings.DEFAULT_TEMPERATURE or 0.2), 0.55)
+        self._humanize_model = settings.model_for_helpers()
+        self._humanize_temperature = 0.45
         self._max_tokens = settings.MAX_TOKENS
 
         logger.info(
-            "WriterService ready | model=%s (premium)",
+            "WriterService ready | model=%s (premium) | temp=%.2f | humanize=%s",
             self._model,
+            self._temperature,
+            self._humanize_model,
         )
 
     @staticmethod
@@ -325,6 +331,10 @@ BRIEF-FIRST QUALITY BAR (mandatory — write like a top assistant, not a brand b
             "- NEVER paste workflow meta into the draft: platform names as announcements "
             "('linkedin announcing…'), format labels, 'ADDITIONAL/EDITORIAL INTENT' text, "
             "SEO requirement boilerplate, or campaign-type labels.\n"
+            "- NEVER cite research tools or vendors by name in the article "
+            "(no 'Tavily', 'Tavily research summary', 'DuckDuckGo', 'NewsAPI', "
+            "'OpenAI', or '(Source: Tavily…)'). Attribute real publishers only "
+            "(Times of India, Ofsted, McKinsey, etc.) or hedge without a fake source.\n"
             "- Keywords are topics to cover naturally — do not insert raw keyword strings "
             "as awkward mid-sentence clauses or run-on SEO phrases.\n"
             "- Never force ungrammatical fragments like 'nri gets scammed people' into prose; "
@@ -526,10 +536,25 @@ BRIEF-FIRST QUALITY BAR (mandatory — write like a top assistant, not a brand b
 
         # Strip common AI-cliché openers that models still insert despite prompts.
         draft = self._strip_ai_cliches(draft or "")
+        # Light-model pass: loosen robotic cadence while keeping facts/structure.
+        if (
+            content_type in LONG_FORM_TYPES
+            and target_words >= 400
+            and not micro
+            and (draft or "").strip()
+        ):
+            draft = self._humanize_draft(
+                draft=draft,
+                outline=outline,
+                primary_topic=topic_lock,
+                content_type=content_type,
+            )
+            draft = self._strip_ai_cliches(draft or "")
         # Brand guideline: never ship dashes/hyphens/em-dashes in body copy.
-        from services.text_cleanup import strip_all_dashes
+        # Also expand you're / it's / I'd so published text has no contractions.
+        from services.text_cleanup import expand_contractions, strip_all_dashes
 
-        draft = strip_all_dashes(draft)
+        draft = expand_contractions(strip_all_dashes(draft))
 
         # Hard length guard for micro asks (models often pad after the first line).
         if micro and (draft or "").strip():
@@ -555,7 +580,9 @@ BRIEF-FIRST QUALITY BAR (mandatory — write like a top assistant, not a brand b
                     primary_topic=topic_lock,
                     research_ctx=research_ctx,
                 )
-                draft = strip_all_dashes(self._strip_ai_cliches(draft or ""))
+                draft = expand_contractions(
+                    strip_all_dashes(self._strip_ai_cliches(draft or ""))
+                )
                 draft = self._enforce_target_word_band(
                     draft,
                     target_words,
@@ -1808,9 +1835,11 @@ SEO notes:
 {self._grounding_rules(outline.brand_name) if content_type != "comment" else "- Do not invent stats or hard-sell the brand in a comment."}
 
 Human voice (important):
-- Sound like a real person, not AI. Vary sentence length, use contractions, be specific
+- Sound like a real person, not AI. Vary sentence length, be specific and concrete
+- Write full words — never contractions (write "you are" not "you're", "it is" not "it's", "I would" not "I'd")
 - Avoid clichés: no "in today's fast-paced world", "moreover", "furthermore", "in conclusion", "dive in", "game-changer", "unlock the power"
 - First lines must be a strong hook when writing LinkedIn / social posts
+- Never use dash or hyphen characters
 
 Write the complete {content_type}:
 """
@@ -1918,28 +1947,42 @@ Return ONLY the comment text. No hashtags. No titles. No lists.
             )
         return (
             "WRITE LIKE A HUMAN (critical — content must not read as AI-generated):\n"
-            "- Vary sentence length and rhythm. Mix short, punchy sentences with longer ones. "
+            "- Sound like a sharp colleague explaining something over coffee — clear, "
+            "specific, slightly opinionated where earned — not a template or brochure.\n"
+            "- Vary sentence length and rhythm. Follow a long sentence with a short one. "
             "Avoid a uniform, robotic cadence.\n"
-            "- Vary paragraph length too — some one-liners, some fuller paragraphs.\n"
+            "- Vary paragraph length too — some one-liners, some fuller paragraphs. "
+            "Do not make every section the same shape or word count.\n"
+            "- Open sections with a concrete scene, question, number, or claim — "
+            "never with a dictionary definition or \"X is important\".\n"
             "- Use natural transitions. NEVER use these AI-cliché phrases: "
             "\"in today's fast-paced world\", \"in today's digital age\", \"in the ever-evolving\", "
+            "\"in the landscape of\", \"in the realm of\", \"a tapestry of\", "
             "\"when it comes to\", \"it's worth noting\", \"it's important to note\", \"needless to say\", "
             "\"moreover\", \"furthermore\", \"in conclusion\", \"in summary\", \"to sum up\", "
-            "\"dive in\"/\"dive deep\", \"unlock the power\", \"unleash\", \"a game-changer\", "
-            "\"a testament to\", \"plays a crucial/vital/pivotal role\", \"navigating the\", "
-            "\"elevate your\", \"rest assured\", \"look no further\", \"we've got you covered\".\n"
+            "\"dive in\"/\"dive deep\", \"delve into\", \"unlock the power\", \"unleash\", "
+            "\"a game-changer\", \"a testament to\", \"plays a crucial/vital/pivotal role\", "
+            "\"navigating the\", \"elevate your\", \"leverage\", \"synergy\", \"cutting-edge\", "
+            "\"robust\", \"seamless\", \"holistic\", \"rest assured\", \"look no further\", "
+            "\"we've got you covered\", \"at the end of the day\".\n"
             "- Never start a sentence with Moreover, Furthermore, Additionally, or In conclusion.\n"
             "- Never use stiff scaffolding: \"First, discuss…\", \"In this article, we will…\", "
-            "\"Let us examine…\", \"This article explores…\", \"As we delve…\".\n"
+            "\"Let us examine…\", \"This article explores…\", \"As we delve…\", "
+            "\"Without further ado…\".\n"
+            "- Avoid triplet filler (\"better, faster, stronger\" style stacks) and "
+            "three near-identical sentences in a row.\n"
             "- Prefer plain spoken words. Say \"NRI families\" or \"families living abroad\" — "
             "never \"expatriates\". Prefer \"parents\" over \"guardians seeking premium care\" "
             "unless that exact segment is required.\n"
             "- Prefer everyday phrasing over academic paper tone (avoid long citation-title dumps "
             "as sentence subjects; attribute briefly).\n"
             f"{secondary_line}"
-            "- Use contractions naturally (it's, you're, don't, we've).\n"
             "- Prefer concrete, specific nouns and real examples over vague generalities.\n"
             "- Address the reader directly with \"you\" where it fits; light first-person (\"we\") is fine.\n"
+            "- NEVER use contractions or apostrophe shortcuts. Write full forms only: "
+            "\"you are\" not \"you're\", \"it is\" not \"it's\", \"I would\" not \"I'd\", "
+            "\"do not\" not \"don't\", \"we have\" not \"we've\", \"cannot\" not \"can't\". "
+            "For possessives prefer \"of the family\" / \"the child needs\" over \"family's\" / \"child's\".\n"
             "- Do not over-hedge or over-explain. Trust the reader.\n"
             "- Avoid formulaic scaffolding (e.g. rigidly equal sections, a forced summary that "
             "restates everything). End with a genuine, specific closing rather than a generic wrap-up.\n"
@@ -2013,14 +2056,18 @@ Return ONLY the comment text. No hashtags. No titles. No lists.
         system: str,
         user: str,
         max_tokens: Optional[int] = None,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
     ) -> str:
         """Invoke the OpenAI model and return plain text (retry once if empty)."""
         last_text = ""
+        use_model = model or self._model
+        use_temp = self._temperature if temperature is None else temperature
         for attempt in range(2):
             response = self._openai.chat.completions.create(
-                model=self._model,
+                model=use_model,
                 max_tokens=max_tokens or self._max_tokens,
-                temperature=self._temperature,
+                temperature=use_temp,
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
@@ -2032,12 +2079,89 @@ Return ONLY the comment text. No hashtags. No titles. No lists.
             if text:
                 return text
             logger.warning(
-                "OpenAI returned empty content | attempt=%d | finish_reason=%s",
+                "OpenAI returned empty content | attempt=%d | finish_reason=%s | model=%s",
                 attempt + 1,
                 finish,
+                use_model,
             )
             last_text = text
         return last_text
+
+    def _humanize_draft(
+        self,
+        draft: str,
+        outline: "ContentOutline",
+        primary_topic: str = "",
+        content_type: str = "article",
+    ) -> str:
+        """
+        Light-model pass: keep facts/structure/CTA, rewrite for natural human voice.
+        Falls back to the original draft on empty/failed responses.
+        """
+        text = (draft or "").strip()
+        if not text:
+            return draft
+
+        word_n = len(text.split())
+        topic = (primary_topic or outline.title or "").strip()
+        system = (
+            "You are a senior human editor. Rewrite the draft so it sounds naturally "
+            "written by a skilled person — not AI. Keep every fact, statistic, citation, "
+            "heading, and the brand CTA. Do not add new claims. Do not shorten more than "
+            "10%. Return Markdown only."
+        )
+        user = f"""Humanize this {content_type} draft.
+
+PRIMARY TOPIC (stay on it): {topic or "(unchanged)"}
+BRAND / TONE: {outline.brand_name} — {outline.tone}
+AUDIENCE: {outline.audience}
+REQUIRED CTA (keep verbatim near the end if present): {outline.cta or "(none)"}
+
+REWRITE RULES:
+- Keep all ## / ### headings and their order.
+- Keep attributed stats, named sources, URLs, and case details.
+- Vary sentence length; cut AI-cliché openers and transitions.
+- Write full forms only — never contractions (you are / it is / I would / do not / we have).
+- Prefer "of the family" style possessives over apostrophe possessives when easy.
+- Replace brochure/template phrasing with plain, specific language.
+- Do not invent stories, numbers, or new sections.
+- No dash characters (use spaces/commas; asterisk bullets only).
+- Target about {word_n} words (stay within ±10%).
+
+DRAFT:
+{text}
+"""
+        try:
+            logger.info(
+                "Humanize pass | model=%s | words_in=%d",
+                self._humanize_model,
+                word_n,
+            )
+            rewritten = self._call_llm(
+                system=system,
+                user=user,
+                max_tokens=min(8192, max(2048, int(word_n * 2.2))),
+                model=self._humanize_model,
+                temperature=self._humanize_temperature,
+            )
+            out = (rewritten or "").strip()
+            if not out:
+                logger.warning("Humanize pass returned empty — keeping original draft")
+                return draft
+            out_words = len(out.split())
+            # Guard: reject collapse or wild expansion
+            if out_words < int(word_n * 0.75) or out_words > int(word_n * 1.25):
+                logger.warning(
+                    "Humanize pass length off | in=%d out=%d — keeping original",
+                    word_n,
+                    out_words,
+                )
+                return draft
+            logger.info("Humanize pass complete | words_out=%d", out_words)
+            return out
+        except Exception as exc:
+            logger.warning("Humanize pass failed (non-fatal): %s", exc)
+            return draft
 
     @staticmethod
     def _strip_ai_cliches(draft: str) -> str:
@@ -2060,9 +2184,13 @@ Return ONLY the comment text. No hashtags. No titles. No lists.
             (r"(?i)\bIt is important to note that\s*", ""),
             (r"(?i)\bIn today'?s fast-paced world,?\s*", ""),
             (r"(?i)\bIn today'?s digital age,?\s*", ""),
+            (r"(?i)\bIn the ever[- ]evolving\s+\w+,?\s*", ""),
+            (r"(?i)\bIn the landscape of\s+", "In "),
+            (r"(?i)\bIn the realm of\s+", "In "),
             (r"(?i)\bWhen it comes to\s+", "For "),
             (r"(?i)\bAt the end of the day,?\s*", ""),
             (r"(?i)\bNeedless to say,?\s*", ""),
+            (r"(?i)\bWithout further ado,?\s*", ""),
             (r"(?i)\bexpatriates\b", "families living abroad"),
             (r"(?i)\bexpatriate\b", "family living abroad"),
             (r"(?i)\bFirst,\s+discuss\b", "Start with"),
@@ -2071,6 +2199,24 @@ Return ONLY the comment text. No hashtags. No titles. No lists.
             (r"(?i)\bIn this article,?\s+we will\b", "We'll"),
             (r"(?i)\bLet us examine\b", "Look at"),
             (r"(?i)\bAs we delve into\b", "On"),
+            (r"(?i)\bdelve into\b", "look at"),
+            (r"(?i)\bunlock the power of\b", "get more from"),
+            (r"(?i)\ba game[- ]changer\b", "a real shift"),
+            (r"(?i)\ba testament to\b", "proof of"),
+            (r"(?i)\bplays a (?:crucial|vital|pivotal) role\b", "matters"),
+            (r"(?i)\bleverage\b", "use"),
+            (r"(?i)\bcutting[- ]edge\b", "modern"),
+            (r"(?i)\brobust\b", "strong"),
+            (r"(?i)\bseamless\b", "smooth"),
+            (r"(?i)\bholistic\b", "full"),
+            # Research-tool leaks that must never appear in published copy
+            (r"(?i)\s*\(\s*Tavily\s+research\s+summary\s*\)", ""),
+            (r"(?i)\s*\(\s*Source:\s*Tavily(?:\s+research\s+summary)?\s*\)", ""),
+            (r"(?i)\bTavily\s+research\s+summary\b", ""),
+            (r"(?i)\s*\(\s*DuckDuckGo(?:\s+search)?\s*(?:summary)?\s*\)", ""),
+            (r"(?i)\s*\(\s*NewsAPI(?:\s+summary)?\s*\)", ""),
+            (r"(?i)\baccording to Tavily\b", "available research suggests"),
+            (r"(?i)\bAccording to Tavily\b", "Available research suggests"),
         ]
         text = draft
         for pattern, repl in replacements:
