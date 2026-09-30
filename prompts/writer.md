@@ -318,6 +318,18 @@ FORMAT REQUIREMENTS:
 - **Pain points**: address at least 2–3 brand pain points explicitly in the body.
 - **CTA**: use the brand's CTA verbatim in the conclusion.
 
+### Human voice (must not read as AI)
+- Write like a sharp colleague explaining the topic — clear, specific, slightly opinionated where earned.
+- Vary sentence and paragraph length; avoid uniform robotic cadence and equal-sized sections.
+- Address the reader with "you" / light "we", but NEVER use contractions or apostrophe shortcuts.
+  Write "you are", "it is", "I would", "do not", "we have", "cannot" — not you're / it's / I'd / don't / we've / can't.
+  Prefer "of the family" / "the child needs" over "family's" / "child's" when natural.
+- Open sections with a concrete scene, question, number, or claim — not a definition or "X is important".
+- Prefer plain words over brochure/template phrasing (no "leverage", "synergy", "cutting-edge", "robust", "seamless", "holistic").
+- Never use AI-cliché transitions or scaffolding: "moreover", "furthermore", "in conclusion", "in today's fast-paced world", "it's worth noting", "dive in", "game-changer", "unlock the power", "in this article we will…".
+- Never use dash or hyphen characters in body copy.
+- End with a genuine, specific closing — not a forced summary that restates every section.
+
 ### Structure
 - Long-form content must have an introduction, at least 3 body sections, and a conclusion.
 - Every section must flow logically from the previous one.
