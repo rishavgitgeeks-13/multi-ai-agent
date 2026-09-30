@@ -6,6 +6,7 @@ Rules:
 - Preserve URLs (hyphens inside http/https links are kept)
 - Convert markdown dash bullets to asterisk bullets
 - Exception: year ranges in Markdown headings only (e.g. 2020-2026)
+- Expand contractions so published copy has no you're / it's / I'd style forms
 """
 
 from __future__ import annotations
@@ -24,6 +25,74 @@ _YEAR_RANGE_DASH_RE = re.compile(
 _YEAR_RANGE_SPACE_RE = re.compile(
     r"\b((?:19|20)\d{2})\s+((?:19|20)\d{2})\b"
 )
+
+# Straight + curly apostrophe variants used in model output
+_APOS = r"['’ʻʼ]"
+
+# Longer / multi-word forms first so "wouldn't" beats "would"
+_CONTRACTIONS: list[tuple[str, str]] = [
+    (rf"\bwon{_APOS}t\b", "will not"),
+    (rf"\bcan{_APOS}t\b", "cannot"),
+    (rf"\bshan{_APOS}t\b", "shall not"),
+    (rf"\bain{_APOS}t\b", "is not"),
+    (rf"\bdon{_APOS}t\b", "do not"),
+    (rf"\bdoesn{_APOS}t\b", "does not"),
+    (rf"\bdidn{_APOS}t\b", "did not"),
+    (rf"\bisn{_APOS}t\b", "is not"),
+    (rf"\baren{_APOS}t\b", "are not"),
+    (rf"\bwasn{_APOS}t\b", "was not"),
+    (rf"\bweren{_APOS}t\b", "were not"),
+    (rf"\bhasn{_APOS}t\b", "has not"),
+    (rf"\bhaven{_APOS}t\b", "have not"),
+    (rf"\bhadn{_APOS}t\b", "had not"),
+    (rf"\bcouldn{_APOS}t\b", "could not"),
+    (rf"\bwouldn{_APOS}t\b", "would not"),
+    (rf"\bshouldn{_APOS}t\b", "should not"),
+    (rf"\bmightn{_APOS}t\b", "might not"),
+    (rf"\bmustn{_APOS}t\b", "must not"),
+    (rf"\bI{_APOS}m\b", "I am"),
+    (rf"\bI{_APOS}ve\b", "I have"),
+    (rf"\bI{_APOS}ll\b", "I will"),
+    (rf"\bI{_APOS}d\b", "I would"),
+    (rf"\byou{_APOS}re\b", "you are"),
+    (rf"\byou{_APOS}ve\b", "you have"),
+    (rf"\byou{_APOS}ll\b", "you will"),
+    (rf"\byou{_APOS}d\b", "you would"),
+    (rf"\bwe{_APOS}re\b", "we are"),
+    (rf"\bwe{_APOS}ve\b", "we have"),
+    (rf"\bwe{_APOS}ll\b", "we will"),
+    (rf"\bwe{_APOS}d\b", "we would"),
+    (rf"\bthey{_APOS}re\b", "they are"),
+    (rf"\bthey{_APOS}ve\b", "they have"),
+    (rf"\bthey{_APOS}ll\b", "they will"),
+    (rf"\bthey{_APOS}d\b", "they would"),
+    (rf"\bhe{_APOS}s\b", "he is"),
+    (rf"\bshe{_APOS}s\b", "she is"),
+    (rf"\bit{_APOS}s\b", "it is"),
+    (rf"\bthat{_APOS}s\b", "that is"),
+    (rf"\bwhat{_APOS}s\b", "what is"),
+    (rf"\bwho{_APOS}s\b", "who is"),
+    (rf"\bwhere{_APOS}s\b", "where is"),
+    (rf"\bthere{_APOS}s\b", "there is"),
+    (rf"\bhere{_APOS}s\b", "here is"),
+    (rf"\blet{_APOS}s\b", "let us"),
+]
+
+
+def expand_contractions(text: str) -> str:
+    """
+    Expand common English contractions to full forms.
+
+    Brand style: published copy should read naturally without
+    you're / it's / I'd apostrophe contractions.
+    Possessives like "family's" are left alone.
+    """
+    if not text:
+        return text
+    out = text
+    for pattern, repl in _CONTRACTIONS:
+        out = re.sub(pattern, repl, out, flags=re.IGNORECASE)
+    return out
 
 
 def strip_all_dashes(text: str) -> str:
