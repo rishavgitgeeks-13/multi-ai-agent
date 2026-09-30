@@ -823,10 +823,19 @@ class ResearchService:
                 ).strip()
                 if not text_content:
                     continue
+                is_internal = bool(item.get("internal_synth")) or (
+                    not (item.get("url") or "").strip()
+                    and not (item.get("title") or "").strip()
+                )
+                title = (item.get("title") or "").strip()
+                # Never surface tool-vendor labels as citeable titles
+                if re.search(r"\b(tavily|duckduckgo|newsapi)\b", title, re.I):
+                    title = ""
+                    is_internal = True
                 documents.append(
                     ResearchDocument(
                         text=text_content[:6000],
-                        title=item.get("title") or "",
+                        title=title,
                         url=item.get("url") or "",
                         source_type="web",
                         relevance_score=float(item.get("score") or 0.75),
@@ -836,12 +845,16 @@ class ResearchService:
                                 self._get_source_authority(item.get("url", "")),
                             ),
                             "provider": "tavily_deep",
+                            "internal_synth": is_internal,
                         },
                     )
                 )
+                # Skip URL-less synth answers from published Sources / citations
+                if is_internal or not (item.get("url") or "").strip():
+                    continue
                 sources.append(
                     ResearchSource(
-                        title=item.get("title") or "",
+                        title=title or (item.get("title") or ""),
                         url=item.get("url") or "",
                         source_type="web",
                         snippet=(item.get("content") or "")[:300],
@@ -1489,6 +1502,14 @@ class ResearchService:
                     if len(snippet) < 28:
                         continue
                     source_label = (doc.title or "").strip()
+                    # Never attribute stats to internal tool labels
+                    if re.search(
+                        r"\b(tavily|duckduckgo|newsapi|research summary|"
+                        r"web search|search summary)\b",
+                        source_label,
+                        re.I,
+                    ) or bool((doc.metadata or {}).get("internal_synth")):
+                        source_label = ""
                     if source_label and source_label.lower() not in snippet.lower():
                         snippet = f"{snippet} (Source: {source_label})"
                     if not snippet or snippet in seen:
@@ -1551,6 +1572,12 @@ class ResearchService:
 
             title = (source.title or "").strip()
             if not title:
+                continue
+            if re.search(
+                r"\b(tavily|duckduckgo|newsapi|research summary)\b",
+                title,
+                re.I,
+            ):
                 continue
 
             citation = title
