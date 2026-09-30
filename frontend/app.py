@@ -833,6 +833,19 @@ def render_extra_instructions_help(key_prefix: str) -> str:
     return st.session_state.get(f"{key_prefix}_instr_buf", "")
 
 
+def start_new_chat() -> None:
+    """Reset to a blank create canvas (ChatGPT-style New chat)."""
+    st.session_state.main_view = "create"
+    st.session_state.active_conversation = None
+    st.session_state.results = {}
+    # Drop chip / tip buffers so Extra tips do not leak into the next run
+    for key in list(st.session_state.keys()):
+        if str(key).endswith("_instr_buf") or str(key).endswith("_chip_clear"):
+            st.session_state.pop(key, None)
+    st.session_state.pop("_revision_count", None)
+    st.session_state.pop("_history_save_error", None)
+
+
 def open_conversation(conv: Dict[str, Any]) -> None:
     st.session_state.active_conversation = conv
     st.session_state.main_view = "history"
@@ -878,8 +891,7 @@ def display_conversation_view(conv: Dict[str, Any]) -> None:
     )
     c1, c2 = st.columns([1, 4])
     if c1.button("← Back to create", key="hist_back_create", use_container_width=True):
-        st.session_state.main_view = "create"
-        st.session_state.active_conversation = None
+        start_new_chat()
         st.rerun()
     c2.caption("Everything from this run is below — content, review, metadata. No extra clicks.")
 
@@ -1148,22 +1160,23 @@ def display_result(result: Dict, workflow_type: str) -> None:
             ):
                 st.divider()
                 st.markdown("**Hashtags:** " + " ".join(str(h) for h in hashtags))
+            # Always surface Sources from the citations payload (even when
+            # ## Sources is already in markdown) so the list is hard to miss.
             citations = final.get("citations") or []
-            if (
-                citations
-                and workflow_type != "email"
-                and "## Sources" not in (markdown or "")
-                and "## References" not in (markdown or "")
-            ):
+            if citations and workflow_type != "email":
                 st.divider()
                 st.markdown("**Sources / Citations**")
                 for i, cit in enumerate(citations[:12], start=1):
                     if isinstance(cit, dict):
                         label = str(
-                            cit.get("formatted") or cit.get("text") or "Source"
+                            cit.get("text") or cit.get("formatted") or "Source"
                         ).strip()
                         url = str(cit.get("url") or "").strip()
                         if url:
+                            # Avoid "title — url" labels inside the link text
+                            if url in label:
+                                label = label.replace(url, "").strip(" .—–-")
+                            label = label or "Source"
                             st.markdown(f"{i}. [{label}]({url})")
                         else:
                             st.markdown(f"{i}. {label}")
@@ -1335,8 +1348,7 @@ with st.sidebar:
         st.warning(st.session_state["_history_save_error"])
 
     if st.button("New chat", key="nav_new_gen", use_container_width=True, type="primary"):
-        st.session_state.main_view = "create"
-        st.session_state.active_conversation = None
+        start_new_chat()
         st.rerun()
 
     if st.button("Log out", key="nav_logout", use_container_width=True):
