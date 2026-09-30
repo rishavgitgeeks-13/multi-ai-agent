@@ -122,17 +122,12 @@ class JSONBuilder:
             markdown,
             flags=re.I,
         )
-        if (
-            hashtags
-            and content_type not in ("email", "comment")
-            and platform not in ("email", "comment")
-            and not micro
-        ):
-            tag_line = " ".join(hashtags)
-            markdown = f"{markdown.rstrip()}\n\nHashtags: {tag_line}\n"
 
-        # Append Sources / References for long-form content (articles, blogs, SEO).
-        # Skip email, comments, and micro posts so short formats stay clean.
+        # Sources before Hashtags so the reference list is part of the article
+        # body (not buried under social tags). Prefer title+url markdown links —
+        # `formatted` often already embeds the URL, which produced plain-text
+        # lines that were easy to miss in the UI.
+        sources_appended = 0
         if (
             citations
             and content_type not in ("email", "comment")
@@ -144,17 +139,44 @@ class JSONBuilder:
             lines = ["## Sources"]
             for i, cit in enumerate(citations[:12], start=1):
                 label = (
-                    str(cit.get("formatted") or cit.get("text") or "").strip()
+                    str(cit.get("text") or cit.get("formatted") or "").strip()
                     or f"Source {i}"
                 )
+                # Drop a trailing bare URL from the label if formatted leaked in
+                if cit.get("url"):
+                    label = re.sub(
+                        r"\s*[—\-.]?\s*" + re.escape(str(cit["url"])) + r"\s*$",
+                        "",
+                        label,
+                    ).strip() or label
+                label = label.strip(" .\"'") or f"Source {i}"
                 url = str(cit.get("url") or "").strip()
-                if url and url not in label:
+                if url:
                     lines.append(f"{i}. [{label}]({url})")
-                elif url:
-                    lines.append(f"{i}. {label}")
                 else:
                     lines.append(f"{i}. {label}")
+            sources_appended = len(lines) - 1
             markdown = f"{markdown.rstrip()}\n\n" + "\n".join(lines) + "\n"
+
+        if (
+            hashtags
+            and content_type not in ("email", "comment")
+            and platform not in ("email", "comment")
+            and not micro
+        ):
+            tag_line = " ".join(hashtags)
+            markdown = f"{markdown.rstrip()}\n\nHashtags: {tag_line}\n"
+
+        if sources_appended:
+            logger.info(
+                "JSONBuilder appended ## Sources | entries=%d",
+                sources_appended,
+            )
+        elif not citations:
+            logger.warning(
+                "JSONBuilder skipped ## Sources | citations=0 "
+                "(strategy had no citations)"
+            )
 
         return {
             "title": content.get("title", ""),
