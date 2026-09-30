@@ -112,16 +112,19 @@ class TavilySearch:
 
         results = []
 
-        # Synthesized answer often carries attributed figures — expose for research.
+        # Synthesized answer often carries attributed figures — expose for research
+        # as internal context only. Never title it with a tool name (writers were
+        # citing "(Tavily research summary)" in published articles).
         answer = response.get("answer")
         if include_answer and isinstance(answer, str) and answer.strip():
             results.append(
                 {
-                    "title": "Tavily research summary",
+                    "title": "",
                     "content": answer.strip()[:2000],
                     "raw_content": answer.strip()[:_MAX_RAW_CONTENT_CHARS],
                     "url": "",
                     "score": 0.8,
+                    "internal_synth": True,
                 }
             )
 
