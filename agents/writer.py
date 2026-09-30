@@ -26,6 +26,9 @@ from services.writer_service import WriterService
 from services.safety_service import safety_service
 from services.citation import CitationService
 
+import logging
+
+logger = logging.getLogger(__name__)
 
 writer_service = WriterService()
 metadata_service = MetadataService()
@@ -51,6 +54,10 @@ def _ensure_strategy_citations(strategy: dict, research_data: dict, user_input: 
     out = dict(strategy or {})
     existing = out.get("citations") or []
     if isinstance(existing, list) and len(existing) > 0:
+        logger.info(
+            "Writer citations already present | citations=%d",
+            len(existing),
+        )
         return out
 
     research = research_data if isinstance(research_data, dict) else {}
@@ -60,12 +67,22 @@ def _ensure_strategy_citations(strategy: dict, research_data: dict, user_input: 
             research_data=research,
             user_input=user_input or "",
         ) or []
-    except Exception:
+    except Exception as exc:
+        logger.warning("Writer CitationService retry failed: %s", exc)
         cites = []
 
+    source = "citation_service_retry"
     if not cites:
         cites = _citations_from_research_fallback(research)
+        source = "research_fallback"
 
+    logger.info(
+        "Writer filled empty citations | source=%s | citations=%d | "
+        "research_sources=%d",
+        source,
+        len(cites),
+        len((research.get("sources") or [])),
+    )
     out["citations"] = cites
     return out
 
