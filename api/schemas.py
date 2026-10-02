@@ -25,10 +25,16 @@ class ContentRequest(BaseModel):
     content_type: str = Field("article", description="article | blog")
     brand: Optional[str] = Field(None, description="Brand name or alias (e.g. 'Futuristix').")
     objective: str = Field("seo", description="seo | authority | engagement | leads")
+    content_mode: Optional[str] = Field(
+        None,
+        description="Optional override: awareness | authority | lead_gen | seo_page",
+    )
     language: str = Field("English", description="English | Hindi")
     additional_instructions: str = Field("", description="Extra writer guidance.")
     session_id: Optional[str] = Field(None, description="Session ID for ConversationMemory.")
-    max_revisions: int = Field(1, ge=1, le=5, description="Max review→writer cycles.")
+    max_revisions: int = Field(
+        2, ge=1, le=5, description="Max review→writer cycles (default 2 toward 95+)."
+    )
 
     model_config = {"json_schema_extra": {
         "example": {
@@ -48,6 +54,9 @@ class EmailRequest(BaseModel):
     brand: Optional[str] = Field(None, description="Brand name or alias.")
     campaign_type: str = Field("newsletter", description="newsletter | nurture | promotional | transactional")
     objective: str = Field("leads", description="leads | engagement")
+    content_mode: Optional[str] = Field(
+        None, description="Optional: awareness | authority | lead_gen | seo_page"
+    )
     language: str = Field("English", description="English | Hindi")
     additional_instructions: str = Field("", description="Extra writer guidance.")
     session_id: Optional[str] = Field(None, description="Session ID for ConversationMemory.")
@@ -69,10 +78,15 @@ class SEORequest(BaseModel):
     user_input: str = Field(..., min_length=3, description="Search query or content brief.")
     content_type: str = Field("article", description="article | blog")
     brand: Optional[str] = Field(None, description="Brand name or alias.")
+    content_mode: Optional[str] = Field(
+        None, description="Optional: awareness | authority | lead_gen | seo_page"
+    )
     language: str = Field("English", description="English | Hindi")
     additional_instructions: str = Field("", description="Extra writer guidance.")
     session_id: Optional[str] = Field(None, description="Session ID for ConversationMemory.")
-    max_revisions: int = Field(1, ge=1, le=5, description="Max review→writer cycles.")
+    max_revisions: int = Field(
+        2, ge=1, le=5, description="Max review→writer cycles (default 2 toward 95+)."
+    )
 
     model_config = {"json_schema_extra": {
         "example": {
@@ -93,6 +107,9 @@ class SocialRequest(BaseModel):
     )
     brand: Optional[str] = Field(None, description="Brand name or alias.")
     objective: str = Field("engagement", description="engagement | authority | leads")
+    content_mode: Optional[str] = Field(
+        None, description="Optional: awareness | authority | lead_gen | seo_page"
+    )
     language: str = Field("English", description="English | Hindi")
     additional_instructions: str = Field("", description="Extra writer guidance.")
     session_id: Optional[str] = Field(None, description="Session ID for ConversationMemory.")
@@ -120,6 +137,9 @@ class ReviewSummary(BaseModel):
     feedback: List[str] = []
     issues: List[str] = []
     dimension_scores: Dict[str, Any] = {}
+    below_target: bool = False
+    quality_label: str = ""
+    final_qc: Dict[str, Any] = {}
 
 class GenerateRequest(BaseModel):
     user_input: str = Field(..., min_length=3)
@@ -127,7 +147,7 @@ class GenerateRequest(BaseModel):
     language: str = "English"
     additional_instructions: str = ""
     session_id: Optional[str] = None
-    max_revisions: int = Field(1, ge=1, le=5)
+    max_revisions: int = Field(2, ge=1, le=5)
 
 
 class WorkflowResult(BaseModel):
@@ -145,6 +165,8 @@ class WorkflowResult(BaseModel):
     safety: Dict[str, Any] = {}
     primary_topic: str = ""
     user_constraints: Dict[str, Any] = {}
+    content_mode: str = ""
+    mode_policy: Dict[str, Any] = {}
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -203,3 +225,46 @@ class ErrorResponse(BaseModel):
     ok: bool = False
     error: str
     detail: Optional[str] = None
+
+
+class SurgicalEditRequest(BaseModel):
+    """POST /api/editor/surgical — fix one Final QC flag family."""
+
+    draft: str = Field(..., min_length=20)
+    flags: List[str] = Field(
+        ...,
+        description="Flag text or keys: seo_stuff, duplicate_cta, thesis_repeat, mode_h1, …",
+    )
+    brand: Optional[str] = None
+    content_mode: Optional[str] = None
+    primary_topic: str = ""
+    cta: str = ""
+    content_type: str = "article"
+    strategy: Dict[str, Any] = Field(default_factory=dict)
+    brand_context: Dict[str, Any] = Field(default_factory=dict)
+
+
+class SurgicalEditResult(BaseModel):
+    ok: bool = True
+    draft: str = ""
+    final_qc: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ApproveGoldRequest(BaseModel):
+    """POST /api/editor/approve-gold — save draft into evals/gold."""
+
+    draft: str = Field(..., min_length=20)
+    user_input: str = ""
+    brand: Optional[str] = None
+    content_mode: str = "seo_page"
+    primary_topic: str = ""
+    must_include: List[str] = Field(default_factory=list)
+    must_not: List[str] = Field(default_factory=list)
+    fixture_id: Optional[str] = None
+    save_reference: bool = True
+
+
+class ApproveGoldResult(BaseModel):
+    ok: bool = True
+    fixture_id: str = ""
+    path: str = ""
