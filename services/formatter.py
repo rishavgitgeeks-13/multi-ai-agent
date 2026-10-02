@@ -1,245 +1,408 @@
 """
-Formatter Service
-=================
+JSON Builder Service
+====================
 
-Parses the Markdown draft into a structured, platform-ready output.
+Assembles the final output payload delivered to the caller.
 
 Input:
-    draft    : str   — raw Markdown draft from WriterService
-    strategy : Dict  — content_type, platform, keywords, tone
+    content  : Dict  — structured output from Formatter
+    metadata : Dict  — metrics block from MetadataService
+    strategy : Dict  — content plan (keywords, tone, cta, seo, hashtags, citations …)
 
 Output: Dict
     {
-        "title"              : str,
-        "markdown"           : str,          # cleaned Markdown
-        "sections"           : List[Dict],   # parsed heading → content blocks
-        "table_of_contents"  : List[Dict],   # [{text, level, anchor}]
-        "keyword_density"    : Dict[str, float],
-        "content_type"       : str,
-        "platform"           : str,
+        "status"   : "success",
+        "request"  : { content_type, platform },
+        "content"  : { title, markdown, sections, table_of_contents },
+        "metadata" : { word_count, reading_time_minutes, … },
+        "seo"      : { primary_keywords, meta_title, meta_description,
+                       slug, search_intent, keyword_density },
+        "hashtags" : List[str],
+        "citations": List[Dict],
+        "cta"      : str,
+        "summary"  : str,
     }
 
-Each section in "sections":
-    {
-        "heading"    : str,
-        "level"      : int,   # 1 | 2 | 3
-        "anchor"     : str,   # slugified heading for TOC
-        "content"    : str,   # raw text of this section
-        "word_count" : int,
-    }
-
-This service performs no LLM calls.
-All processing is text and regex based.
+This service performs no LLM calls and no computation.
+It is a pure assembly / projection layer.
 """
 
 import logging
-import re
-import unicodedata
-from typing import Dict, List
+from typing import Any, Dict, List
 
-from services.text_cleanup import expand_contractions, strip_all_dashes
+import re
 
 logger = logging.getLogger(__name__)
 
 
-class Formatter:
-    """Parses and structures the Markdown draft for downstream consumers."""
+class JSONBuilder:
+    """Combines the formatter output, metadata, and strategy into the final payload."""
 
-    def run(self, draft: str, strategy: Dict) -> Dict:
-        """Parse the draft and return the structured formatted output."""
-        logger.info("Formatter.run() | draft_length=%d", len(draft))
+    def run(
+        self,
+        content: Dict,
+        metadata: Dict,
+        strategy: Dict,
+    ) -> Dict:
+        """Build and return the final output dict."""
+        logger.info("JSONBuilder.run()")
 
-        cleaned = self._clean_markdown(draft)
-        title = self._extract_h1(cleaned)
-        sections = self._parse_sections(cleaned)
-        toc = self._build_toc(sections)
-        keywords = self._resolve_keywords(strategy)
-        keyword_density = self._compute_keyword_density(cleaned, keywords)
-        content_type = str(strategy.get("content_type", "article")).lower()
-        platform = str(strategy.get("platform", "website")).lower()
+        hashtags = self._resolve_hashtags(strategy)
+        citations = self._resolve_citations(strategy)
+        # Prefer Evidence Ledger Sources when present (generic — all brands)
+        try:
+            ledger = strategy.get("evidence_ledger") or []
+            if ledger:
+                from services.evidence_ledger import ledger_to_citations
 
-        result = {
-            "title": title,
-            "markdown": cleaned,
-            "sections": sections,
-            "table_of_contents": toc,
-            "keyword_density": keyword_density,
-            "content_type": content_type,
-            "platform": platform,
+                ledger_cites = ledger_to_citations(ledger)
+                if ledger_cites:
+                    citations = ledger_cites
+        except Exception:
+            pass
+        # Final safety filter so API payload + ## Sources stay on-brief
+        try:
+            from services.citation import CitationService
+
+            topic_hint = " ".join(
+                [
+                    str(strategy.get("title") or ""),
+                    str(strategy.get("primary_topic") or ""),
+                    " ".join(str(k) for k in (strategy.get("keywords") or [])[:8]),
+                ]
+            ).strip()
+            citations = CitationService._filter_topic_relevant(
+                citations,
+                topic_hint or str(strategy.get("cta") or ""),
+                brief_lock=strategy.get("brief_lock") or {},
+            )
+        except Exception:
+            pass
+        # Zero-junk: drop tool-leak cites and sanitize labels before packaging
+        try:
+            from services.junk_gate import filter_citations
+
+            citations = filter_citations(citations)
+        except Exception:
+            pass
+        content_block = self._build_content(content, strategy, hashtags, citations)
+        # Keep payload hashtags in sync with what was actually packaged
+        if isinstance(content_block, dict) and content_block.get("hashtags") is not None:
+            hashtags = list(content_block.get("hashtags") or hashtags)
+
+        final = {
+            "status": "success",
+            "request": self._build_request(content, strategy),
+            "content": content_block,
+            "metadata": self._build_metadata(metadata),
+            "seo": self._build_seo(content, metadata, strategy),
+            "hashtags": hashtags,
+            "citations": citations,
+            "cta": str(strategy.get("cta") or ""),
+            "summary": self._build_summary(metadata),
+            "font": str(strategy.get("font") or ""),
         }
 
         logger.info(
-            "Formatter complete | sections=%d | keywords=%d",
-            len(sections),
-            len(keywords),
+            "JSONBuilder complete | words=%d | sections=%d | citations=%d",
+            metadata.get("word_count", 0),
+            len(content.get("sections", [])),
+            len(citations),
         )
-        return result
+        return final
 
     # ------------------------------------------------------------------
-    # Markdown cleaning
+    # Request block
     # ------------------------------------------------------------------
 
-    def _clean_markdown(self, draft: str) -> str:
-        """
-        Normalise the draft:
-        - Collapse 3+ consecutive blank lines to exactly two
-        - Ensure a blank line before every heading
-        - Remove trailing whitespace from each line
-        """
-        # Strip trailing whitespace per line
-        lines = [line.rstrip() for line in draft.splitlines()]
-        text = "\n".join(lines)
-
-        # Brand guideline: no dashes; expand you're / it's / I'd contractions
-        text = expand_contractions(strip_all_dashes(text))
-
-        # Collapse excessive blank lines
-        text = re.sub(r"\n{3,}", "\n\n", text)
-
-        # Ensure one blank line before every heading
-        text = re.sub(r"(?<!\n\n)(^#{1,3} )", r"\n\1", text, flags=re.MULTILINE)
-
-        return text.strip()
-
-    # ------------------------------------------------------------------
-    # Title extraction
-    # ------------------------------------------------------------------
-
-    def _extract_h1(self, markdown: str) -> str:
-        """Return the first H1 heading text, or empty string."""
-        match = re.search(r"^#\s+(.+)$", markdown, re.MULTILINE)
-        return match.group(1).strip() if match else ""
-
-    # ------------------------------------------------------------------
-    # Section parsing
-    # ------------------------------------------------------------------
-
-    def _parse_sections(self, markdown: str) -> List[Dict]:
-        """
-        Split the document at H1–H3 headings and return a list of sections.
-
-        Content before the first heading is captured as a level-0 intro section.
-        """
-        pattern = re.compile(r"^(#{1,3})\s+(.+)$", re.MULTILINE)
-        splits = list(pattern.finditer(markdown))
-
-        sections: List[Dict] = []
-
-        # Content before the first heading (intro / preamble)
-        intro_end = splits[0].start() if splits else len(markdown)
-        intro_text = markdown[:intro_end].strip()
-        if intro_text:
-            sections.append(self._make_section(
-                heading="",
-                level=0,
-                content=intro_text,
-            ))
-
-        # Content under each heading
-        for i, match in enumerate(splits):
-            level = len(match.group(1))
-            heading = match.group(2).strip()
-            content_start = match.end()
-            content_end = splits[i + 1].start() if i + 1 < len(splits) else len(markdown)
-            content = markdown[content_start:content_end].strip()
-
-            sections.append(self._make_section(
-                heading=heading,
-                level=level,
-                content=content,
-            ))
-
-        return sections
-
-    def _make_section(self, heading: str, level: int, content: str) -> Dict:
-        """Build a single section dict."""
+    def _build_request(self, content: Dict, strategy: Dict) -> Dict:
+        """Carry forward the request parameters for traceability."""
         return {
-            "heading": heading,
-            "level": level,
-            "anchor": self._slugify(heading) if heading else "",
-            "content": content,
-            "word_count": len(content.split()),
+            "content_type": content.get("content_type") or strategy.get("content_type", "article"),
+            "platform": content.get("platform") or strategy.get("platform", "website"),
+            "tone": strategy.get("tone", ""),
+            "language": strategy.get("language", "English"),
         }
 
     # ------------------------------------------------------------------
-    # Table of contents
+    # Content block
     # ------------------------------------------------------------------
 
-    def _build_toc(self, sections: List[Dict]) -> List[Dict]:
-        """Build a flat TOC from heading sections (level 1–3, non-empty headings)."""
+    def _build_content(
+        self,
+        content: Dict,
+        strategy: Dict,
+        hashtags: List[str],
+        citations: List[Dict[str, Any]],
+    ) -> Dict:
+        """Project the formatter output into the content block."""
+        markdown = content.get("markdown", "") or ""
+        platform = str(
+            content.get("platform") or strategy.get("platform") or "website"
+        ).lower()
+        content_type = str(
+            content.get("content_type") or strategy.get("content_type") or "article"
+        ).lower()
+
+        # Append hashtags for every content type except email (if not already present).
+        # Skip embedding into micro-length bodies so the word budget stays intact;
+        # hashtags remain available on the payload under final_output.hashtags.
+        try:
+            target_n = int(strategy.get("target_word_count") or 0)
+        except (TypeError, ValueError):
+            target_n = 0
+        micro = target_n > 0 and target_n <= 75
+
+        # Strip Writer-added Sources / References / Citations footers (duplicates)
+        markdown = re.sub(
+            r"(?:\n+(?:##\s*)?(?:\*\*)?(?:Sources|References|Citations)(?:\*\*)?:?\b[\s\S]*)$",
+            "",
+            markdown,
+            flags=re.I,
+        )
+
+        # Hashtags: Writer may already append a footer; strip ALL trailing
+        # "Hashtags:" blocks then append at most ONE clean footer from strategy.
+        markdown = re.sub(
+            r"(?:\n+Hashtags:\s*[^\n]+)+\s*$",
+            "",
+            markdown,
+            flags=re.I,
+        )
+
+        # Re-filter citations against brief/keywords so packaging never ships
+        # cyber-fraud / off-topic junk that slipped past research.
+        topic_hint = " ".join(
+            [
+                str(strategy.get("title") or ""),
+                str(strategy.get("primary_topic") or ""),
+                " ".join(str(k) for k in (strategy.get("keywords") or [])[:8]),
+                str(strategy.get("content_angle") or ""),
+            ]
+        ).strip()
+        try:
+            from services.citation import CitationService
+
+            citations = CitationService._filter_topic_relevant(
+                list(citations or []),
+                topic_hint or str(strategy.get("cta") or ""),
+                brief_lock=strategy.get("brief_lock") or {},
+            )
+        except Exception:
+            pass
+
+        # Sources before Hashtags so the reference list is part of the article
+        # body (not buried under social tags). Prefer title+url markdown links —
+        # `formatted` often already embeds the URL, which produced plain-text
+        # lines that were easy to miss in the UI.
+        sources_appended = 0
+        try:
+            from services.junk_gate import (
+                filter_citations,
+                filter_hashtags,
+                sanitize_source_label,
+                scrub_packaged_markdown,
+            )
+
+            citations = filter_citations(citations)
+        except Exception:
+            filter_hashtags = None  # type: ignore
+            sanitize_source_label = None  # type: ignore
+            scrub_packaged_markdown = None  # type: ignore
+
+        if (
+            citations
+            and content_type not in ("email", "comment")
+            and platform not in ("email", "comment", "twitter", "x")
+            and not micro
+            and "## Sources" not in markdown
+            and "## References" not in markdown
+        ):
+            lines = ["## Sources"]
+            for i, cit in enumerate(citations[:12], start=1):
+                label = (
+                    str(cit.get("text") or cit.get("formatted") or "").strip()
+                    or f"Source {i}"
+                )
+                url = str(cit.get("url") or "").strip()
+                if sanitize_source_label:
+                    label = sanitize_source_label(label, url=url, fallback_index=i)
+                else:
+                    label = label.strip(" .\"'") or f"Source {i}"
+                if url:
+                    lines.append(f"{i}. [{label}]({url})")
+                else:
+                    lines.append(f"{i}. {label}")
+            sources_appended = len(lines) - 1
+            markdown = f"{markdown.rstrip()}\n\n" + "\n".join(lines) + "\n"
+
+        # Drop vertical hashtags whose topics never appear in the body
+        if filter_hashtags:
+            hashtags = filter_hashtags(hashtags, markdown)
+
+        if (
+            hashtags
+            and content_type not in ("email", "comment")
+            and platform not in ("email", "comment")
+            and not micro
+        ):
+            tag_line = " ".join(hashtags)
+            markdown = f"{markdown.rstrip()}\n\nHashtags: {tag_line}\n"
+
+        if scrub_packaged_markdown:
+            markdown, scrub_notes = scrub_packaged_markdown(markdown, hashtags=hashtags)
+            if scrub_notes:
+                logger.info("JSONBuilder junk scrub | notes=%s", scrub_notes[:6])
+
+        if sources_appended:
+            logger.info(
+                "JSONBuilder appended ## Sources | entries=%d",
+                sources_appended,
+            )
+        elif not citations:
+            logger.warning(
+                "JSONBuilder skipped ## Sources | citations=0 "
+                "(strategy had no citations)"
+            )
+
+        return {
+            "title": content.get("title", ""),
+            "markdown": markdown,
+            "sections": content.get("sections", []),
+            "table_of_contents": content.get("table_of_contents", []),
+            "hashtags": hashtags,
+        }
+
+    # ------------------------------------------------------------------
+    # Metadata block
+    # ------------------------------------------------------------------
+
+    def _build_metadata(self, metadata: Dict) -> Dict:
+        """Project the metadata service output into the metadata block."""
+        return {
+            "word_count": metadata.get("word_count", 0),
+            "reading_time_minutes": metadata.get("reading_time_minutes", 0),
+            "paragraph_count": metadata.get("paragraph_count", 0),
+            "heading_count": metadata.get("heading_count", 0),
+            "headings": metadata.get("headings", []),
+            "language": metadata.get("language", "English"),
+            "has_statistics": metadata.get("has_statistics", False),
+            "has_lists": metadata.get("has_lists", False),
+            "has_code_blocks": metadata.get("has_code_blocks", False),
+        }
+
+    # ------------------------------------------------------------------
+    # SEO block
+    # ------------------------------------------------------------------
+
+    def _build_seo(
+        self,
+        content: Dict,
+        metadata: Dict,
+        strategy: Dict,
+    ) -> Dict:
+        """
+        Assemble the SEO block by merging:
+        - strategy["seo"] (if the SEO service was run)
+        - metadata (derived meta_title, meta_description, slug, keywords)
+        - keyword_density from the formatter
+        """
+        seo_blueprint = strategy.get("seo", {})
+
+        primary_keywords = (
+            seo_blueprint.get("primary_keywords")
+            or metadata.get("primary_keywords")
+            or []
+        )
+        secondary_keywords = (
+            seo_blueprint.get("secondary_keywords")
+            or strategy.get("keywords")
+            or []
+        )
+
+        return {
+            "primary_keywords": primary_keywords,
+            "secondary_keywords": secondary_keywords,
+            "meta_title": (
+                (seo_blueprint.get("meta_title") or "").strip()
+                or (metadata.get("meta_title") or "").strip()
+                or (metadata.get("title") or "Untitled")[:60]
+            ),
+            "meta_description": (
+                (seo_blueprint.get("meta_description") or "").strip()
+                or (metadata.get("meta_description") or "").strip()
+                or "Read this guide for practical insights and next steps."
+            ),
+            "slug": (
+                (seo_blueprint.get("slug") or "").strip()
+                or (metadata.get("slug") or "").strip()
+                or "untitled"
+            ),
+            "search_intent": seo_blueprint.get("search_intent", ""),
+            "keyword_density": content.get("keyword_density", {}),
+        }
+
+    # ------------------------------------------------------------------
+    # Hashtags
+    # ------------------------------------------------------------------
+
+    def _resolve_hashtags(self, strategy: Dict) -> List[str]:
+        """Return the hashtag list from strategy, normalised."""
+        raw = strategy.get("hashtags", [])
+        if not isinstance(raw, list):
+            return []
         return [
-            {
-                "text": s["heading"],
-                "level": s["level"],
-                "anchor": s["anchor"],
-            }
-            for s in sections
-            if s["heading"] and s["level"] in (1, 2, 3)
+            ("#" + str(tag).lstrip("#").strip())
+            for tag in raw
+            if str(tag).strip()
         ]
 
     # ------------------------------------------------------------------
-    # Keyword density
+    # Citations
     # ------------------------------------------------------------------
 
-    def _resolve_keywords(self, strategy: Dict) -> List[str]:
-        """Return primary + secondary keywords for density measurement."""
-        seo = strategy.get("seo", {}) or {}
-        primary = (
-            seo.get("primary_keywords")
-            or seo.get("keywords")
-            or strategy.get("keywords")
-            or strategy.get("keyword_direction")
-            or []
-        )
-        secondary = (
-            seo.get("secondary_keywords")
-            or strategy.get("secondary_keywords")
-            or []
-        )
-        combined: List[str] = []
-        seen = set()
-        for kw in list(primary)[:2] + list(secondary)[:6]:
-            normalised = str(kw).strip().lower()
-            if normalised and normalised not in seen:
-                seen.add(normalised)
-                combined.append(normalised)
-        return combined
+    def _resolve_citations(self, strategy: Dict) -> List[Dict[str, Any]]:
+        """Normalise strategy citations into a stable list of dicts."""
+        raw = strategy.get("citations") or []
+        if not isinstance(raw, list):
+            return []
 
-    def _compute_keyword_density(
-        self,
-        markdown: str,
-        keywords: List[str],
-    ) -> Dict[str, float]:
-        """
-        Return the density (occurrences / total_words) for each keyword.
-        Density is expressed as a float rounded to 4 decimal places.
-        """
-        if not keywords:
-            return {}
-
-        text_lower = markdown.lower()
-        total_words = len(markdown.split())
-        if total_words == 0:
-            return {kw: 0.0 for kw in keywords}
-
-        density: Dict[str, float] = {}
-        for kw in keywords:
-            # Match whole-phrase occurrences (not just substring)
-            escaped = re.escape(kw)
-            count = len(re.findall(r"\b" + escaped + r"\b", text_lower))
-            density[kw] = round(count / total_words, 4)
-
-        return density
+        out: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in raw:
+            if isinstance(item, dict):
+                text = str(item.get("text") or "").strip()
+                url = str(item.get("url") or "").strip()
+                formatted = str(item.get("formatted") or text or url).strip()
+                ctype = str(item.get("type") or "web").strip() or "web"
+            else:
+                text = str(item or "").strip()
+                url = ""
+                formatted = text
+                ctype = "web"
+            if not formatted:
+                continue
+            key = (url or formatted).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(
+                {
+                    "text": text or formatted,
+                    "url": url,
+                    "type": ctype,
+                    "formatted": formatted,
+                }
+            )
+        return out
 
     # ------------------------------------------------------------------
-    # Slug utility
+    # Human-readable summary line
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _slugify(text: str) -> str:
-        """Convert heading text to a lowercase, hyphen-separated anchor id."""
-        text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
-        text = re.sub(r"[^\w\s-]", "", text.lower())
-        text = re.sub(r"[\s_]+", "-", text).strip("-")
-        text = re.sub(r"-{2,}", "-", text)
-        return text[:80]
+    def _build_summary(self, metadata: Dict) -> str:
+        """Return a one-line human-readable summary of the content piece."""
+        words = metadata.get("word_count", 0)
+        minutes = metadata.get("reading_time_minutes", 0)
+        ct = metadata.get("content_type", "article").capitalize()
+        return f"{ct} | {words} words | {minutes} min read"
