@@ -24,6 +24,9 @@ def _normalise(result: Dict[str, Any]) -> Dict[str, Any]:
             "feedback": review.get("feedback", []),
             "issues": review.get("issues", []),
             "dimension_scores": review.get("dimension_scores", {}),
+            "below_target": bool(review.get("below_target")),
+            "quality_label": review.get("quality_label") or "",
+            "final_qc": review.get("final_qc") or {},
         },
         "revision_count": result.get("revision_count", 0),
         "metadata": result.get("metadata") or {},
@@ -32,6 +35,8 @@ def _normalise(result: Dict[str, Any]) -> Dict[str, Any]:
         "safety": result.get("safety") or {},
         "primary_topic": result.get("primary_topic") or "",
         "user_constraints": result.get("user_constraints") or {},
+        "content_mode": result.get("content_mode") or "",
+        "mode_policy": result.get("mode_policy") or {},
         # Workflow-specific extras (ignored by models that don't declare them)
         "email_meta": result.get("email_meta") or {},
         "seo_analysis": result.get("seo_analysis") or {},
