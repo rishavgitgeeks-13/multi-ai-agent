@@ -19,11 +19,11 @@ PASS_THRESHOLD = 95
 # Dimension weights — must match ReviewService.DIMENSION_WEIGHTS
 DIMENSION_WEIGHTS: Dict[str, float] = {
     "content_quality": 0.18,
-    "seo_compliance": 0.22,
+    "seo_compliance": 0.14,
     "brand_alignment": 0.18,
     "structure": 0.12,
     "factual_grounding": 0.15,
-    "natural_voice": 0.10,
+    "natural_voice": 0.18,
     "cta_effectiveness": 0.05,
 }
 
@@ -39,11 +39,11 @@ class DimensionScores(BaseModel):
 
     Weights applied to produce the final composite score:
       content_quality    18%
-      seo_compliance     22%
+      seo_compliance     14%
       brand_alignment    18%
       structure          12%
       factual_grounding  15%
-      natural_voice      10%
+      natural_voice      18%
       cta_effectiveness   5%
     """
 
