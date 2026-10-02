@@ -94,7 +94,7 @@ class Settings(BaseSettings):
     # ==========================================================
     # Agent Configuration
     # ==========================================================
-    MAX_REVIEW_ITERATIONS: int = 1
+    MAX_REVIEW_ITERATIONS: int = 2
     MAX_RESEARCH_RESULTS: int = 10
     DEFAULT_TEMPERATURE: float = 0.2
     MAX_TOKENS: int = 4096
@@ -108,9 +108,10 @@ class Settings(BaseSettings):
 
     # ==========================================================
     # Frontend / API auth (optional simple gate)
+    # Admin portal bootstrap — team users must use @gitgeeks.com only.
     # ==========================================================
     APP_USERNAME: str = "admin"
-    APP_PASSWORD: str = "admin123"
+    APP_PASSWORD: str = "admin@123/"
 
     # ==========================================================
     # Environment file configuration
