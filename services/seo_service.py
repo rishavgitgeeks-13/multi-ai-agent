@@ -1206,7 +1206,10 @@ Rules:
     ) -> tuple:
         """
         Ensure Excel-kit selected keywords appear in the final blueprint.
-        Kit keywords lead; topic keywords fill remaining slots.
+
+        Awareness-first brands (e.g. Kinvo): topic primaries lead; brand
+        keyword is appended last (late placement near CTA — not H1 stuffing).
+        Commercial brands: brand keyword may lead when present in the kit.
         """
         selected = (brand_context or {}).get("seo_kit_selected") or {}
         if not selected:
@@ -1228,9 +1231,24 @@ Rules:
                     break
             return out
 
-        kit_primary = list(selected.get("brand_keywords") or []) + list(
-            selected.get("primary_keywords") or []
+        from config.mode_policies import get_policy, is_awareness_mode
+
+        mode = str(
+            (brand_context or {}).get("content_mode")
+            or ((brand_context or {}).get("mode_policy") or {}).get("mode")
+            or ""
         )
+        policy = (brand_context or {}).get("mode_policy") or get_policy(mode)
+        awareness = is_awareness_mode(policy) or (
+            str(policy.get("h1_keyword_source") or "") == "topic_primary"
+            and not policy.get("brand_in_h1")
+        )
+        brand_kws = list(selected.get("brand_keywords") or [])
+        topic_kws = list(selected.get("primary_keywords") or [])
+        if awareness or not policy.get("brand_in_h1"):
+            kit_primary = topic_kws + brand_kws
+        else:
+            kit_primary = brand_kws + topic_kws
         kit_secondary = list(selected.get("secondary_keywords") or []) + list(
             selected.get("service_keywords") or []
         )
@@ -1273,8 +1291,10 @@ Search Intent  : {dominant_intent}
 Top Keywords   : {top_kw_str}
 
 Requirements:
-  meta_title       – 50–60 characters. Lead with the primary keyword.
-                     Include brand name only if it fits within the limit.
+  meta_title       – 50–60 characters. Lead with the primary *topic* keyword
+                     (service/problem phrase). Include brand name only if it fits
+                     and the piece is commercial — for awareness-first brands,
+                     do NOT lead the meta title with the brand product name.
   meta_description – 150–160 characters. Benefit-driven, ends with a CTA
                      appropriate for the search intent.
   slug             – Lowercase, hyphens only, 3–6 words, keyword-rich.
