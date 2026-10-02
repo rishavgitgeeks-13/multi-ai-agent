@@ -1,324 +1,305 @@
 """
-Strategy Agent
-==============
+Review Agent
+============
 
-Transforms the research package into a complete content strategy.
+Evaluates the content draft produced by the Writer Agent.
 
 Responsibilities:
-    1. Run SEOService      → ranked keywords, search intent, meta fields
-    2. Run HashtagService  → platform-optimised hashtag list
-    3. Run CitationService → formatted citations from research sources
-    4. Generate content outline
-    5. Assemble the strategy dict consumed by the Writer Agent
-    6. Persist service outputs to the shared state
-    7. Route the workflow to the Writer Agent
+    - Safety fallback: discard any abusive / off-policy / inverted draft
+    - Run ReviewService to score the draft across five dimensions
+    - Enforce the maximum revision limit (settings.MAX_REVIEW_ITERATIONS)
+    - If PASS  → mark workflow COMPLETED, route to END
+    - If FAIL  → increment revision_count, inject rewrite_instruction
+                 into strategy, route back to the Writer Agent
+    - Update shared state with the review result
 
-The Strategy Agent does not generate content.
+The Review Agent does not generate or modify content (except discarding
+unsafe output).
 """
 
 import logging
 
 from schemas.state import ContentState
-from services.citation import CitationService
-from services.hashtags import HashtagService
-from services.seo_service import SEOService
-from services.writer_service import WriterService
+from services.review_service import ReviewService, PASS_THRESHOLD
+from services.safety_service import safety_service
+
+from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Service instances (module-level singletons)
-# ---------------------------------------------------------------------------
-
-seo_service = SEOService()
-hashtag_service = HashtagService()
-citation_service = CitationService()
-writer_service = WriterService()
+review_service = ReviewService()
 
 
-# ---------------------------------------------------------------------------
-# Strategy node
-# ---------------------------------------------------------------------------
-
-def strategy_node(state: ContentState) -> ContentState:
-    """Run all strategy services and assemble the strategy."""
-
+def review_node(state: ContentState) -> ContentState:
+    """Evaluate the draft and decide: discard, revise, or complete."""
     logger.info(
-        "strategy_node() | query=%s…",
-        state["user_input"][:80],
+        "review_node() | revision_count=%d | max=%d",
+        state.get("revision_count", 0),
+        state.get("max_revision_count", settings.MAX_REVIEW_ITERATIONS),
     )
 
-    user_input = state.get("primary_topic") or state["user_input"]
-    research = state["research_data"]
-    brand = state["brand_context"]
-    platform = state.get("platform", "website")
-    content_type = state.get("content_type", "article")
-    language = state.get("language", "English")
-
-    # Honour user word-count when building outline scale; else kit platform band
-    constraints = state.get("user_constraints") or {}
-    target_words = constraints.get("target_word_count")
-    platform_profile = {}
-    if not target_words:
-        try:
-            from brands.seo_kit_loader import (
-                get_platform_profile,
-                suggested_word_count,
-            )
-
-            platform_profile = get_platform_profile(content_type, platform)
-            kit_n = suggested_word_count(content_type, platform)
-            if kit_n:
-                target_words = int(kit_n)
-        except Exception:
-            platform_profile = {}
-
-    # Refresh kit keyword selection with the locked primary topic (more accurate).
-    try:
-        from brands.seo_kit_loader import select_keywords_for_brief
-
-        kit = brand.get("seo_kit") or {}
-        if kit:
-            brand["seo_kit_selected"] = select_keywords_for_brief(
-                kit,
-                user_input=state.get("user_input") or user_input,
-                primary_topic=state.get("primary_topic") or user_input,
-            )
-    except Exception:
-        pass
-
-    # Hashtags for every content type except email and social comments
-    _plat = str(platform or "").lower()
-    _ct = str(content_type).lower()
-    if _ct in ("email", "comment") or _plat in ("email", "comment"):
-        hashtag_platform = "email"  # HashtagService returns [] for email/comment
-    else:
-        hashtag_platform = platform or content_type or "website"
+    draft = state.get("draft") or ""
 
     # ------------------------------------------------------------------
-    # 1 — SEO Service
+    # Safety fallback — discard completely if draft is unsafe / inverted
     # ------------------------------------------------------------------
-    try:
-        seo_blueprint = seo_service.run(
-            user_input=user_input,
-            research_data=research,
-            brand_context=brand,
+    draft_safety = safety_service.evaluate_draft(
+        draft,
+        primary_topic=state.get("primary_topic") or "",
+        user_input=state.get("user_input") or "",
+        additional_instructions=state.get("additional_instructions") or "",
+        defensive_allow=bool((state.get("safety") or {}).get("defensive_allow")),
+        request_id=state.get("request_id", ""),
+        session_id=state.get("session_id", ""),
+        brand=state.get("brand"),
+        content_type=state.get("content_type", ""),
+        source="review",
+    )
+    if draft_safety.get("blocked"):
+        msg = draft_safety.get("message") or (
+            "Generated content was discarded because it violated content policy."
         )
-
-        logger.info(
-            "SEOService done | primary_keywords=%d | intent=%s",
-            len(seo_blueprint.get("primary_keywords", [])),
-            seo_blueprint.get("search_intent", ""),
-        )
-
-    except Exception as exc:
-        logger.error(
-            "SEOService failed: %s — using empty blueprint",
-            exc,
-        )
-
-        seo_blueprint = {
-            "primary_keywords": brand.get(
-                "keyword_direction",
-                [],
-            ),
-            "secondary_keywords": [],
-            "keyword_scores": [],
-            "search_intent": "Informational",
-            "meta_title": "",
-            "meta_description": "",
-            "slug": "",
+        state["draft"] = ""
+        state["metadata"] = {}
+        state["formatted_output"] = {}
+        state["final_output"] = {}
+        state["workflow_status"] = "BLOCKED"
+        state["current_agent"] = "review"
+        state["next_agent"] = "end"
+        state["errors"] = list(state.get("errors") or []) + [msg]
+        state["safety"] = {
+            **(state.get("safety") or {}),
+            "allowed": False,
+            "blocked": True,
+            "category": draft_safety.get("category", "draft_blocked"),
+            "reason": draft_safety.get("reason", ""),
+            "message": msg,
+            "discarded_at": "review",
         }
+        state["review"] = {
+            "score": 0,
+            "status": "BLOCKED",
+            "needs_revision": False,
+            "feedback": [],
+            "issues": [draft_safety.get("reason") or "Policy violation in draft"],
+            "rewrite_instruction": "",
+            "dimension_scores": {},
+            "revision_number": state.get("revision_count", 0),
+        }
+        logger.warning(
+            "review_node DISCARDED draft | category=%s | reason=%s",
+            draft_safety.get("category"),
+            draft_safety.get("reason"),
+        )
+        return state
+
+    strategy = state["strategy"]
+    brand_context = state["brand_context"]
+    revision_count = state.get("revision_count", 0)
+    max_revisions = state.get("max_revision_count", settings.MAX_REVIEW_ITERATIONS)
 
     # ------------------------------------------------------------------
-    # 2 — Hashtag Service
+    # Run the quality review
     # ------------------------------------------------------------------
-    try:
-        hashtags = hashtag_service.run(
-            user_input=user_input,
-            research_data=research,
-            brand_context=brand,
-            seo_blueprint=seo_blueprint,
-            platform=hashtag_platform,
+    review = review_service.run(
+        draft=draft,
+        strategy=strategy,
+        brand_context=brand_context,
+        revision_count=revision_count,
+        primary_topic=state.get("primary_topic") or "",
+        user_input=state.get("user_input") or "",
+    )
+
+    # Word-count adherence when user requested a target
+    constraints = state.get("user_constraints") or {}
+    target = constraints.get("target_word_count")
+    length_ok = True
+    if target:
+        actual = len(draft.split())
+        flexible = constraints.get("word_count_flexible", True)
+        tmin = constraints.get("target_word_count_min")
+        tmax = constraints.get("target_word_count_max")
+        # Prefer explicit range from prompt (e.g. 700-800 words)
+        if tmin is not None and tmax is not None:
+            lo, hi = int(tmin), int(tmax)
+        elif int(target) <= 50:
+            lo, hi = max(1, int(target) - 2), int(target) + 2
+        elif flexible:
+            lo, hi = int(target * 0.85), int(target * 1.15)
+        else:
+            lo, hi = int(target * 0.95), int(target * 1.05)
+        if actual < lo or actual > hi:
+            length_ok = False
+            review["issues"] = list(review.get("issues") or [])
+            review["issues"].append(
+                f"Word count {actual} is outside the user-requested target "
+                f"of ~{target} words (acceptable {lo}-{hi})."
+            )
+            if review.get("needs_revision") or revision_count < max_revisions:
+                review["needs_revision"] = True
+                review["status"] = "FAIL"
+                review["rewrite_instruction"] = (
+                    (review.get("rewrite_instruction") or "").strip()
+                    + f"\nAdjust length to approximately {target} words "
+                    f"(current ~{actual}). Do not expand into a long article. "
+                    f"Do not change the primary topic."
+                ).strip()
+
+    # Topic fidelity reminder in rewrite instructions
+    primary = (state.get("primary_topic") or "").strip()
+    if review.get("needs_revision") and primary:
+        review["rewrite_instruction"] = (
+            (review.get("rewrite_instruction") or "").strip()
+            + f"\nStay strictly on this primary topic (do not invert roles or change subject): {primary}"
+        ).strip()
+
+    # ------------------------------------------------------------------
+    # Enforce maximum revision limit
+    # ------------------------------------------------------------------
+    word_count = len(draft.split())
+    content_type = (strategy.get("content_type") or state.get("content_type") or "").lower()
+    # Default article floor only when the user did NOT set a length.
+    if target:
+        min_words = max(1, int(target) // 2) if int(target) > 50 else 1
+    else:
+        min_words = (
+            settings.MIN_ARTICLE_WORDS
+            if content_type in ("blog", "article")
+            else 1
         )
 
+    if review["needs_revision"] and revision_count >= max_revisions:
+        # Never force-pass empty / far-too-short content — mark FAILED instead.
+        if word_count < max(1, min_words // 4 if not target else min_words):
+            logger.error(
+                "Max revisions reached with unusable draft (%d words) — marking FAILED",
+                word_count,
+            )
+            review["needs_revision"] = False
+            review["status"] = "FAIL"
+            review["issues"] = list(review.get("issues") or []) + [
+                f"Generation failed after {max_revisions} revisions: "
+                f"content only {word_count} words (unusable)."
+            ]
+            state["workflow_status"] = "FAILED"
+            state["errors"] = list(state.get("errors") or []) + [
+                f"Content generation failed: draft too short ({word_count} words) "
+                f"after maximum revisions. Please retry."
+            ]
+            state["current_agent"] = "review"
+            state["next_agent"] = "end"
+            state["review"] = review
+            return state
+
+        # Do not force-PASS when the user length ask is still violated.
+        if target and not length_ok:
+            logger.warning(
+                "Max revisions reached with length miss (target=%s, actual=%d) — keeping FAIL",
+                target,
+                word_count,
+            )
+            review["needs_revision"] = False
+            review["status"] = "FAIL"
+            review["feedback"] = list(review.get("feedback") or []) + [
+                f"Maximum revision limit ({max_revisions}) reached without hitting "
+                f"the requested ~{target}-word length (got {word_count})."
+            ]
+            state["workflow_status"] = "COMPLETED"
+            state["current_agent"] = "review"
+            state["next_agent"] = "end"
+            state["review"] = review
+            return state
+
+        # Comments: never force-PASS an off-format reply (pitch / incomplete / hashtags).
+        platform = (strategy.get("platform") or state.get("platform") or "").lower()
+        if content_type == "comment" or platform == "comment":
+            hard_issues = [
+                i
+                for i in (review.get("issues") or [])
+                if any(
+                    k in str(i).lower()
+                    for k in (
+                        "outreach",
+                        "sales",
+                        "hashtag",
+                        "incomplete",
+                        "cut off",
+                        "outside the requested",
+                        "too long",
+                    )
+                )
+            ]
+            if hard_issues:
+                logger.warning(
+                    "Max revisions reached on comment with format issues — keeping FAIL"
+                )
+                review["needs_revision"] = False
+                review["status"] = "FAIL"
+                review["feedback"] = list(review.get("feedback") or []) + [
+                    f"Maximum revision limit ({max_revisions}) reached; "
+                    "comment still off-format (not force-passed)."
+                ]
+                state["workflow_status"] = "COMPLETED"
+                state["current_agent"] = "review"
+                state["next_agent"] = "end"
+                state["review"] = review
+                return state
+
+        logger.warning(
+            "Max revision limit (%d) reached — forcing PASS with score %d (below_target=%s)",
+            max_revisions,
+            review["score"],
+            int(review.get("score") or 0) < PASS_THRESHOLD,
+        )
+        review["needs_revision"] = False
+        review["status"] = "PASS"
+        if int(review.get("score") or 0) < PASS_THRESHOLD:
+            review["below_target"] = True
+            review["quality_label"] = "below_target"
+            review["feedback"].append(
+                f"BELOW TARGET: Maximum revision limit ({max_revisions}) reached. "
+                f"Force-passed at score {review['score']}/100 "
+                f"(quality target is {PASS_THRESHOLD}+). "
+                "This is NOT a 9+ ship — treat as provisional and consider another run "
+                "with higher Max Revisions."
+            )
+        else:
+            review["below_target"] = False
+            review["quality_label"] = "on_target"
+            review["feedback"].append(
+                f"Maximum revision limit ({max_revisions}) reached at score "
+                f"{review['score']} (meets {PASS_THRESHOLD}+ target)."
+            )
+
+    # ------------------------------------------------------------------
+    # Route: FAIL → Writer; PASS / force-PASS → Final Editor
+    # ------------------------------------------------------------------
+    if review["needs_revision"]:
+        state["revision_count"] = revision_count + 1
+        state["strategy"]["rewrite_instruction"] = review["rewrite_instruction"]
+        state["current_agent"] = "review"
+        state["next_agent"] = "writer"
         logger.info(
-            "HashtagService done | hashtags=%d",
-            len(hashtags),
+            "Review FAIL | score=%d | sending back to writer (revision %d of %d)",
+            review["score"],
+            state["revision_count"],
+            max_revisions,
         )
-
-    except Exception as exc:
-        logger.error(
-            "HashtagService failed: %s — using empty list",
-            exc,
-        )
-        hashtags = []
-
-    # Merge any hashtags the user listed in Additional Instructions
-    try:
-        import re as _re
-
-        instr = state.get("additional_instructions") or ""
-        user_tags = _re.findall(r"#\w+", instr)
-        if user_tags and hashtag_platform not in ("email", "comment"):
-            seen = {h.lower() for h in hashtags}
-            for tag in user_tags:
-                if tag.lower() not in seen:
-                    hashtags.append(tag)
-                    seen.add(tag.lower())
-    except Exception:
-        pass
-
-    # ------------------------------------------------------------------
-    # 3 — Citation Service
-    # ------------------------------------------------------------------
-    try:
-        citations = citation_service.run(
-            research_data=research,
-            user_input=user_input,
-        )
-
+    else:
+        # Do not mark COMPLETED here — Final Editor finishes the workflow.
+        if "below_target" not in review:
+            score_now = int(review.get("score") or 0)
+            review["below_target"] = score_now < PASS_THRESHOLD
+            review["quality_label"] = (
+                "on_target" if score_now >= PASS_THRESHOLD else "below_target"
+            )
+        state["current_agent"] = "review"
+        state["next_agent"] = "final_editor"
         logger.info(
-            "CitationService done | citations=%d",
-            len(citations),
+            "Review PASS | score=%d | below_target=%s | routing to final_editor",
+            review["score"],
+            review.get("below_target"),
         )
 
-    except Exception as exc:
-        logger.error(
-            "CitationService failed: %s — using empty list",
-            exc,
-        )
-        citations = []
-
-    # ------------------------------------------------------------------
-    # 4 — Generate Outline
-    # ------------------------------------------------------------------
-    try:
-        outline = writer_service._generate_outline(
-            user_input=user_input,
-            strategy={
-                "keywords": seo_blueprint.get(
-                    "primary_keywords",
-                    [],
-                ),
-                "secondary_keywords": seo_blueprint.get(
-                    "secondary_keywords",
-                    [],
-                ),
-                "audience": brand.get(
-                    "reader_segment",
-                    [],
-                ),
-                "tone": brand.get(
-                    "tone",
-                    "",
-                ),
-                "cta": brand.get(
-                    "cta",
-                    "",
-                ),
-                "pain_points": brand.get(
-                    "pain_points",
-                    [],
-                ),
-            },
-            brand_context=brand,
-            content_type=content_type,
-        )
-
-        logger.info(
-            "Outline generated | sections=%d",
-            len(outline.sections),
-        )
-
-        outline_data = [
-            {
-                "heading": section.heading,
-                "heading_level": section.heading_level,
-                "brief": section.brief,
-                "keywords": section.keywords,
-            }
-            for section in outline.sections
-        ]
-
-    except Exception as exc:
-        logger.error(
-            "Outline generation failed: %s",
-            exc,
-        )
-        outline_data = []
-
-    # ------------------------------------------------------------------
-    # 5 — Assemble strategy dict
-    # ------------------------------------------------------------------
-    strategy = {
-        # Core content plan
-        "title": seo_blueprint.get("meta_title") or "",
-        "content_angle": "",
-        "audience": brand.get(
-            "reader_segment",
-            [],
-        ),
-        "tone": brand.get(
-            "tone",
-            "",
-        ),
-        "outline": outline_data,
-        "cta": brand.get(
-            "cta",
-            "",
-        ),
-
-        # Request metadata
-        "content_type": content_type,
-        "platform": platform,
-        "language": language,
-        "font": brand.get("font") or "",
-
-        # Keyword strategy
-        "keywords": seo_blueprint.get(
-            "primary_keywords",
-            [],
-        ),
-        "secondary_keywords": seo_blueprint.get(
-            "secondary_keywords",
-            [],
-        ),
-        "pain_points": brand.get(
-            "pain_points",
-            [],
-        ),
-
-        # SEO
-        "seo": seo_blueprint,
-
-        # Hashtags
-        "hashtags": hashtags,
-
-        # Citations
-        "citations": citations,
-
-        # Safety / fidelity / constraints from Manager
-        "primary_topic": state.get("primary_topic") or user_input,
-        "target_word_count": target_words,
-        "word_count_flexible": bool(
-            (constraints or {}).get("word_count_flexible", True)
-        ),
-        # Brand SEO kit guidance (hashtags/keywords/length bands from Excel)
-        "seo_kit_selected": brand.get("seo_kit_selected") or {},
-        "platform_profile": platform_profile or {},
-    }
-
-    # ------------------------------------------------------------------
-    # 6 — Persist to state
-    # ------------------------------------------------------------------
-    state["strategy"] = strategy
-    state["seo"] = seo_blueprint
-    state["hashtags"] = hashtags
-
-    state["current_agent"] = "strategy"
-    state["next_agent"] = "writer"
-
-    logger.info("strategy_node() complete")
-
+    state["review"] = review
     return state
