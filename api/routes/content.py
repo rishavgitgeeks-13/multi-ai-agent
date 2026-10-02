@@ -42,6 +42,7 @@ async def generate_content(req: ContentRequest) -> ContentResult:
                 additional_instructions=req.additional_instructions,
                 session_id=req.session_id,
                 max_revisions=req.max_revisions,
+                content_mode=req.content_mode,
             )
         )
     except Exception as exc:
