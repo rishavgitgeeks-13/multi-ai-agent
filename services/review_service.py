@@ -24,11 +24,13 @@ Output: Dict
 
 Evaluation dimensions
 ---------------------
-  Content Quality    25 % — depth, clarity, value, factual grounding
-  SEO Compliance     25 % — keyword density, headings, meta coverage
-  Brand Alignment    20 % — tone match, audience fit, pain points addressed
-  Structure          20 % — intro / body / conclusion, heading hierarchy
-  CTA Effectiveness  10 % — clear, action-oriented, intent-matched
+  Content Quality    18 % — depth, clarity, demonstration, value
+  SEO Compliance     14 % — natural keyword presence (not stuffing)
+  Brand Alignment    18 % — tone match, audience fit, pain points addressed
+  Structure          12 % — intro / body / conclusion, heading hierarchy
+  Factual Grounding  15 % — attributed, on-brief evidence
+  Natural Voice      18 % — human cadence, no template / B2B cliché
+  CTA Effectiveness   5 % — clear, action-oriented, intent-matched
 
 PASS threshold : score >= 95
 """
@@ -47,11 +49,11 @@ PASS_THRESHOLD = 95
 
 DIMENSION_WEIGHTS: Dict[str, float] = {
     "content_quality": 0.18,
-    "seo_compliance": 0.22,
+    "seo_compliance": 0.14,
     "brand_alignment": 0.18,
     "structure": 0.12,
     "factual_grounding": 0.15,
-    "natural_voice": 0.10,
+    "natural_voice": 0.18,
     "cta_effectiveness": 0.05,
 }
 
@@ -111,6 +113,18 @@ AI_TELL_PHRASES: List[str] = [
     "as we delve",
     "expatriates",
     "expatriate",
+    # Cinematic / brochure tells (generic — all brands)
+    "picture a family",
+    "picture this",
+    "imagine a weekday",
+    "imagine a family",
+    "the stakes are high",
+    "your family deserves nothing less",
+    "the stakes are high",
+    "cutting-edge",
+    "holistic approach",
+    "seamless experience",
+    "delve into",
 ]
 
 
@@ -162,12 +176,26 @@ class ReviewService:
 
         brief = (primary_topic or user_input or "").strip()
 
+        # Mode policy review weights (Content Quality OS)
+        self._active_weights = dict(DIMENSION_WEIGHTS)
+        try:
+            from config.mode_policies import get_policy, review_weights_for
+
+            pol = {}
+            if isinstance(brand_context, dict):
+                pol = brand_context.get("mode_policy") or {}
+                if not pol and brand_context.get("content_mode"):
+                    pol = get_policy(str(brand_context.get("content_mode")))
+            if pol:
+                self._active_weights = review_weights_for(pol)
+        except Exception:
+            self._active_weights = dict(DIMENSION_WEIGHTS)
+
         # Hard fail empty drafts immediately (no LLM spend on blank content).
         if not (draft or "").strip():
             content_type = str(strategy.get("content_type", "article")).lower()
             secondary_bit = (
-                " Place at least one secondary keyword in the introduction and one "
-                "in the conclusion."
+                " Prefer natural wording over keyword stuffing."
                 if content_type in ("blog", "article")
                 else " Do not keyword-stuff; keep short-form copy natural."
             )
@@ -225,12 +253,15 @@ class ReviewService:
 
         # Weighted final score
         dim_scores = llm_result.get("dimension_scores", {})
-        # Cap natural_voice when AI-cliché pre-check fired
+        # Cap natural_voice when AI-cliché / humanize pre-check fired
         found_tells = self._detect_ai_tells(draft.lower())
-        if found_tells:
+        humanize_flags = [
+            i for i in pre_check_issues if str(i).startswith("HUMANIZE_")
+        ]
+        if found_tells or humanize_flags:
             dim_scores["natural_voice"] = min(
                 int(dim_scores.get("natural_voice", 50)),
-                60,
+                55 if humanize_flags else 60,
             )
 
         # Soft vs severe fidelity: do not crush scores for honest data gaps.
@@ -275,8 +306,12 @@ class ReviewService:
         status = "PASS" if score >= PASS_THRESHOLD else "FAIL"
         needs_revision = status == "FAIL"
 
-        # Always revise when AI tells remain or natural_voice is weak
-        if found_tells or int(dim_scores.get("natural_voice", 100)) < 75:
+        # Always revise when AI tells remain, humanize QC failed, or natural_voice is weak
+        if (
+            found_tells
+            or humanize_flags
+            or int(dim_scores.get("natural_voice", 100)) < 75
+        ):
             needs_revision = True
             status = "FAIL"
 
@@ -292,6 +327,14 @@ class ReviewService:
                     "DUPLICATE_HASHTAGS",
                     "ABSOLUTE_CLAIM",
                     "HEADING_CLAIM_MISMATCH",
+                    "HUMANIZE_",
+                    "DEMONSTRATE_",
+                    "FIDELITY_OPENER",
+                    "FIDELITY_BRAND_NAME",
+                    "FIDELITY_MARKET",
+                    "EVIDENCE_UNSUPPORTED",
+                    "EVIDENCE_OVERCLAIM",
+                    "EVIDENCE_TONE",
                 )
             )
         ]
@@ -300,12 +343,23 @@ class ReviewService:
             status = "FAIL"
             dim_scores["factual_grounding"] = min(
                 int(dim_scores.get("factual_grounding", 50)),
-                78,
+                70 if any("EVIDENCE_" in str(i) for i in qc_force) else 78,
             )
             dim_scores["brand_alignment"] = min(
                 int(dim_scores.get("brand_alignment", 50)),
                 82,
             )
+            if any(str(i).startswith("HUMANIZE_") for i in qc_force):
+                dim_scores["natural_voice"] = min(
+                    int(dim_scores.get("natural_voice", 50)),
+                    50,
+                )
+            if any(str(i).startswith("DEMONSTRATE_") for i in qc_force):
+                # ~8.5 ceiling until abstract claims are shown in real business scenes
+                dim_scores["content_quality"] = min(
+                    int(dim_scores.get("content_quality", 50)),
+                    84,
+                )
             score = self._calculate_score(dim_scores)
 
         rewrite_instruction = ""
@@ -317,6 +371,18 @@ class ReviewService:
                     issues=pre_check_issues + llm_result.get("issues", []),
                     content_type=str(strategy.get("content_type", "article")).lower(),
                 )
+            demo_flags = [
+                i for i in pre_check_issues if str(i).startswith("DEMONSTRATE_")
+            ]
+            if demo_flags:
+                rewrite_instruction = (
+                    (rewrite_instruction + "\n" if rewrite_instruction else "")
+                    + "9+ RULE — demonstrate, do not only explain: for every abstract "
+                    "claim, show what it looks like in a real business (workflow moment, "
+                    "decision trade-off, cost/time impact, or team scene). Keep the "
+                    "ideas; replace explanatory passages with concrete scenes. "
+                    + " ".join(str(d) for d in demo_flags[:2])
+                ).strip()
             if found_tells:
                 rewrite_instruction = (
                     rewrite_instruction
@@ -406,8 +472,44 @@ class ReviewService:
         # Micro length asks: skip long-form SEO/heading rules (they force expansion).
         micro_request = bool(user_target_n and user_target_n <= 75)
 
+        from config.mode_policies import (
+            brand_allowed_in_h1,
+            get_policy,
+            is_awareness_mode,
+            secondaries_enforced,
+        )
+        from services.cta_policy import is_awareness_first
+
+        policy = {}
+        if isinstance(brand_context, dict):
+            policy = brand_context.get("mode_policy") or {}
+            if not policy:
+                mode = str(brand_context.get("content_mode") or "")
+                if mode:
+                    policy = get_policy(mode)
+        awareness = is_awareness_mode(policy) or (
+            not policy and is_awareness_first(brand_context)
+        )
+        topic_h1 = (not brand_allowed_in_h1(policy)) if policy else awareness
+        late_brand = str(policy.get("brand_placement") or "") == "late_third" or (
+            awareness and not policy
+        )
+        enforce_secondaries = (
+            secondaries_enforced(policy) if policy else (not awareness)
+        )
         # Primary / secondary SEO checks (fair matching — not brittle exact-only)
         seo = strategy.get("seo", {}) or {}
+        brand_keywords = [
+            str(k).strip()
+            for k in (
+                seo.get("brand_keywords")
+                or ((brand_context or {}).get("seo_kit_selected") or {}).get(
+                    "brand_keywords"
+                )
+                or []
+            )
+            if str(k).strip()
+        ]
         primary_keywords = [
             str(k).strip()
             for k in (
@@ -427,39 +529,99 @@ class ReviewService:
             if str(k).strip()
         ]
         draft_lower = draft.lower()
+        brand_keys_l = {b.lower() for b in brand_keywords}
+        # If kit brand terms were merged into primary, treat them as brand not topic lead
+        if not brand_keys_l:
+            # Heuristic: CamelCase / Care / brand display name
+            display = str((brand_context or {}).get("display_name") or "").lower()
+            for p in primary_keywords:
+                pl = p.lower().replace(" ", "")
+                if display and display.replace(" ", "") in pl:
+                    brand_keys_l.add(p.lower())
+                    brand_keywords.append(p)
+        topic_primaries = [
+            p for p in primary_keywords if p.lower() not in brand_keys_l
+        ]
 
         if primary_keywords and not micro_request:
-            lead = primary_keywords[0]
-            if not self._keyword_covered(lead, draft_lower):
-                issues.append(
-                    f"Lead primary keyword not adequately covered in content: {lead}."
-                )
+            if topic_h1:
+                lead = topic_primaries[0] if topic_primaries else ""
+                if lead and not self._keyword_covered(lead, draft_lower):
+                    issues.append(
+                        f"Lead topic keyword not adequately covered in content: {lead}."
+                    )
+                if content_type in ("blog", "article") and lead:
+                    h1_match = re.search(r"^#\s+(.+)$", draft, re.MULTILINE)
+                    if h1_match and not self._keyword_covered(
+                        lead, h1_match.group(1).lower()
+                    ):
+                        issues.append(
+                            f"Lead topic keyword weakly covered in H1 title: {lead}."
+                        )
+                for bk in brand_keywords[:1]:
+                    if not self._keyword_covered(bk, draft_lower):
+                        if late_brand or awareness:
+                            issues.append(
+                                f"Brand keyword missing (late-placement): {bk}. "
+                                "Mention it once near the end / CTA — do not put it in the H1."
+                            )
+                    else:
+                        h1_match = re.search(r"^#\s+(.+)$", draft, re.MULTILINE)
+                        if (
+                            h1_match
+                            and not brand_allowed_in_h1(policy)
+                            and self._keyword_covered(bk, h1_match.group(1).lower())
+                        ):
+                            issues.append(
+                                f"MODE_SEO: Brand keyword \"{bk}\" should not lead the H1 "
+                                f"in {policy.get('mode') or 'this'} mode. "
+                                "Use a topic phrase in the title; place the brand later."
+                            )
+                        if late_brand:
+                            mid = max(1, len(draft_lower) // 2)
+                            if not self._keyword_covered(bk, draft_lower[mid:]):
+                                issues.append(
+                                    f"Brand keyword \"{bk}\" appears too early. "
+                                    "Keep awareness pacing — introduce the brand in the final third."
+                                )
             else:
-                missing_other = [
-                    kw for kw in primary_keywords[1:2]
-                    if not self._keyword_covered(kw, draft_lower)
-                ]
-                if missing_other:
+                lead = primary_keywords[0]
+                if not self._keyword_covered(lead, draft_lower):
                     issues.append(
-                        f"Primary keywords weakly covered: {', '.join(missing_other)}."
+                        f"Lead primary keyword not adequately covered in content: {lead}."
                     )
+                else:
+                    missing_other = [
+                        kw
+                        for kw in primary_keywords[1:2]
+                        if not self._keyword_covered(kw, draft_lower)
+                    ]
+                    if missing_other:
+                        issues.append(
+                            f"Primary keywords weakly covered: {', '.join(missing_other)}."
+                        )
 
-            if content_type in ("blog", "article"):
-                h1_match = re.search(r"^#\s+(.+)$", draft, re.MULTILINE)
-                if h1_match and not self._keyword_covered(lead, h1_match.group(1).lower()):
-                    issues.append(
-                        f"Lead primary keyword weakly covered in H1 title: {lead}."
-                    )
+                if content_type in ("blog", "article"):
+                    h1_match = re.search(r"^#\s+(.+)$", draft, re.MULTILINE)
+                    if h1_match and not self._keyword_covered(
+                        lead, h1_match.group(1).lower()
+                    ):
+                        issues.append(
+                            f"Lead primary keyword weakly covered in H1 title: {lead}."
+                        )
 
         # Secondary: only enforce shorter, placeable phrases (≤5 words).
+        # Optional modes (awareness/authority): do not force secondaries.
         placeable_secondary = [
-            kw for kw in secondary_keywords[:6]
-            if len(kw.split()) <= 5
+            kw
+            for kw in secondary_keywords[:6]
+            if len(kw.split()) <= 5 and kw.lower() not in brand_keys_l
         ]
         if (
             placeable_secondary
             and content_type in ("blog", "article")
             and not micro_request
+            and enforce_secondaries
         ):
             hit = any(
                 self._keyword_covered(kw, draft_lower)
@@ -471,14 +633,19 @@ class ReviewService:
                     f"Naturally include at least one of: {', '.join(placeable_secondary[:3])}."
                 )
 
-        # Soft density band for lead primary (warn only).
+        # Soft density band for lead topic/primary (warn only).
+        density_lead = (
+            (topic_primaries[0] if topic_primaries else "")
+            if topic_h1
+            else (primary_keywords[0] if primary_keywords else "")
+        )
         if (
-            primary_keywords
+            density_lead
             and content_type in ("blog", "article")
             and word_count > 0
             and not micro_request
         ):
-            lead = primary_keywords[0].lower()
+            lead = density_lead.lower()
             escaped = re.escape(lead)
             count = len(re.findall(r"\b" + escaped + r"\b", draft_lower))
             density_pct = (count / word_count) * 100.0
@@ -496,7 +663,11 @@ class ReviewService:
             )
 
         # CTA check (skip for micro — full CTA often won't fit the budget)
+        # Soft vs hard policy is shared with Writer (services.cta_policy) so
+        # awareness / explain briefs are not force-failed for missing CTA.
         if not micro_request:
+            from services.cta_policy import cta_is_hard_required
+
             brand = brand_context or {}
             cta = str(
                 strategy.get("cta")
@@ -505,7 +676,13 @@ class ReviewService:
                 or ""
             ).strip()
             display_name = str(brand.get("display_name") or "").strip()
-            if cta and cta.lower() not in draft_lower:
+            hard_cta = cta_is_hard_required(
+                content_type=content_type,
+                primary_topic=primary_topic or "",
+                objective=str(strategy.get("objective") or brand.get("objective") or ""),
+                brand_context=brand,
+            )
+            if hard_cta and cta and cta.lower() not in draft_lower:
                 # Accept brand-name variants of the CTA (e.g. "Contact MPM…")
                 brand_cta_ok = bool(
                     display_name
@@ -520,7 +697,7 @@ class ReviewService:
                         f"BRAND_CTA_MISMATCH: CTA text not found near the close. "
                         f"End with the brand CTA verbatim: \"{cta}\"."
                     )
-            elif display_name and content_type in ("blog", "article"):
+            elif hard_cta and display_name and content_type in ("blog", "article"):
                 # Closing CTA must name the brand, not a generic advisor label
                 closing = draft[-1200:]
                 generic = re.search(
@@ -561,6 +738,71 @@ class ReviewService:
                     primary_topic=primary_topic or "",
                 )
             )
+
+        # ---- Humanize QC (generic — all brands): does it read human? ----
+        if content_type in ("blog", "article", "linkedin", "email") and not micro_request:
+            try:
+                from services.fidelity_gate import humanize_review_issues
+
+                issues.extend(humanize_review_issues(draft))
+            except Exception:
+                pass
+
+        # ---- 9+ demonstrate QC (articles): explain vs show in a real scene ----
+        if content_type in ("blog", "article") and not micro_request:
+            try:
+                from config.mode_policies import demonstrate_style, get_policy
+                from services.fidelity_gate import demonstrate_review_issues
+
+                pol = {}
+                if isinstance(brand_context, dict):
+                    pol = brand_context.get("mode_policy") or {}
+                    if not pol and brand_context.get("content_mode"):
+                        pol = get_policy(str(brand_context.get("content_mode")))
+                issues.extend(
+                    demonstrate_review_issues(
+                        draft,
+                        content_type=content_type,
+                        demo_style=demonstrate_style(pol) if pol else "",
+                    )
+                )
+            except Exception:
+                pass
+
+        # ---- Evidence claim audit (generic — all brands) ----
+        if content_type in ("blog", "article") and not micro_request:
+            try:
+                from services.evidence_ledger import claim_audit_issues
+
+                ledger = strategy.get("evidence_ledger") or []
+                issues.extend(claim_audit_issues(draft, ledger))
+            except Exception:
+                pass
+
+        # ---- Generic fidelity gate (all brands) ----
+        try:
+            from services.fidelity_gate import BriefLock, review_fidelity_issues
+
+            lock = BriefLock.from_dict(
+                (brand_context or {}).get("brief_lock")
+                or strategy.get("brief_lock")
+                or {}
+            )
+            if not lock.topic:
+                lock.topic = primary_topic or ""
+            if not lock.brand_display_name:
+                lock.brand_display_name = str(
+                    (brand_context or {}).get("display_name") or ""
+                )
+            issues.extend(
+                review_fidelity_issues(
+                    draft,
+                    lock,
+                    citations=strategy.get("citations") or [],
+                )
+            )
+        except Exception:
+            pass
 
         return issues
 
@@ -694,12 +936,20 @@ class ReviewService:
         True if the keyword (or most of its content tokens) appears in text.
 
         Exact phrase match preferred; otherwise ≥70% of meaningful tokens.
-        Avoids failing reviews on near-matches when content is on-topic.
+        Also accepts compound brand forms (KinvoCare ↔ kinvo care).
         """
         kw = (keyword or "").strip().lower()
         if not kw:
             return True
         if kw in text_lower:
+            return True
+        # CamelCase / spaced brand variants
+        spaced = re.sub(r"([a-z])([A-Z])", r"\1 \2", keyword or "").strip().lower()
+        compact = re.sub(r"\s+", "", kw)
+        text_compact = re.sub(r"\s+", "", text_lower)
+        if spaced and spaced != kw and spaced in text_lower:
+            return True
+        if compact and len(compact) >= 4 and compact in text_compact:
             return True
 
         stop = {
@@ -786,6 +1036,26 @@ class ReviewService:
         search_intent = seo.get("search_intent", "Informational")
         content_type = strategy.get("content_type", "article")
 
+        from services.cta_policy import cta_is_hard_required, review_cta_instruction
+
+        hard_cta = cta_is_hard_required(
+            content_type=str(content_type or ""),
+            primary_topic=primary_topic or "",
+            objective=str(strategy.get("objective") or brand_context.get("objective") or ""),
+            brand_context=brand_context,
+        )
+        cta_policy_line = review_cta_instruction(str(cta or ""), hard_cta)
+        cta_score_hint = (
+            f"Score cta_effectiveness 90+ only when the closing CTA matches or closely matches: "
+            f"{cta or '(brand CTA)'}"
+            if hard_cta
+            else (
+                "Score cta_effectiveness 85+ when the close is natural and on-brief; "
+                "do NOT heavily punish a soft/educational close that omits a hard sell. "
+                f"If a CTA appears, prefer: {cta or '(brand CTA)'}."
+            )
+        )
+
         audience_str = ", ".join(str(a) for a in audience) if isinstance(audience, list) else str(audience)
         pain_str = "; ".join(str(p) for p in pain_points[:4]) if pain_points else "none"
         primary_str = ", ".join(primary_kw[:5]) if primary_kw else "none"
@@ -794,7 +1064,7 @@ class ReviewService:
 
         truncated_draft = self._prepare_draft_for_review(draft)
         secondary_rewrite_hint = (
-            "Also fix secondary-keyword gaps in intro/closing and any incomplete sentences. "
+            "Remove keyword stuffing; do not force secondary keywords into intro/closing. "
             if str(content_type).lower() in ("blog", "article")
             else "Do not keyword-stuff; keep short-form copy natural. Fix any incomplete sentences. "
         )
@@ -830,14 +1100,31 @@ IMPORTANT REVIEW RULES:
   block is present — those cuts are review-window artifacts, not publishing errors.
 - Do not invent issues that are not visible in the provided excerpts.
 - Prefer specific actionable feedback over harsh generic deductions.
+- For awareness-first brands (warm/family educate-before-promote): do NOT demand the
+  brand product name in the H1. Score seo_compliance on topic keywords; brand name
+  once late near the CTA is correct. Deduct if brand is stuffed early or missing entirely.
 - Score factual_grounding 90+ when the draft uses at least 2–3 clear attributed statistics/citations
   (named source + concrete figure) relevant to the brief and avoids absolute uncited industry claims.
-- Score cta_effectiveness 90+ only when the closing CTA matches or closely matches: {cta or "(brand CTA)"}
+- {cta_score_hint}
 - Score natural_voice 90+ ONLY when the writing reads like a skilled human wrote it:
-  varied sentence length and rhythm, natural transitions, some personality, and NO AI-cliché
-  phrases (e.g. "in today's fast-paced world", "moreover", "furthermore", "in conclusion",
-  "it's worth noting", "dive in", "game-changer", "unlock the power", "a testament to").
-  Deduct heavily for robotic uniform cadence, formulaic scaffolding, or generic filler.
+  varied sentence length and rhythm, natural transitions, some personality,
+  concrete examples, full word forms (no you're / it's / I'd contractions),
+  no cinematic Picture/Imagine openers, no brochure closers, and NO AI-cliché
+  phrases (e.g. "in today's fast-paced world", "moreover", "furthermore",
+  "in conclusion", "it's worth noting", "dive in", "game-changer",
+  "unlock the power", "a testament to", "leverage", "cutting-edge",
+  "in the landscape/realm of", "holistic", "seamless", "the stakes are high").
+  Deduct heavily for robotic uniform cadence, equal-sized template sections,
+  brochure phrasing, formulaic scaffolding, or generic filler.
+  If PRE-CHECK lists HUMANIZE_* issues, natural_voice MUST be below 60 and
+  rewrite_instruction MUST tell the Writer exactly how to humanize those lines.
+- Demonstrate > explain (9+ bar for content_quality):
+  Cap content_quality at 84 when the draft has good ideas but mostly *explains*
+  abstract claims instead of *showing* them in a real business (workflow moment,
+  decision trade-off, cost/time impact, team scene, before/after).
+  Score content_quality 90+ ONLY when abstract claims are regularly demonstrated
+  that way. On FAIL / revision, rewrite_instruction MUST name 2–3 abstract claims
+  and require a concrete business demonstration for each.
 {geo_hint}
 === USER BRIEF / PRIMARY TOPIC (must match) ===
 {brief[:500]}
@@ -850,7 +1137,7 @@ PAIN POINTS TO ADDRESS: {pain_str}
 PRIMARY KEYWORDS     : {primary_str}
 SECONDARY KEYWORDS   : {secondary_str}
 SEARCH INTENT        : {search_intent}
-REQUIRED CTA         : {cta or "none"}
+{cta_policy_line}
 
 === PRE-CHECK ISSUES (already identified) ===
 {pre_issues_str}
@@ -862,16 +1149,18 @@ REQUIRED CTA         : {cta or "none"}
 Score each dimension 0–100:
 
 content_quality (weight 18%)
-  90–100: Exceptional depth, clear structure, compelling narrative — AND on the user brief
-  70–89 : Good coverage of the brief, minor gaps in depth or clarity
+  90–100: Strong ideas *demonstrated* in real-business scenes (workflow, decision,
+          cost/time, team moment) — not only explained; on the user brief
+  70–89 : Good ideas/coverage, but some claims stay abstract/explanatory
+          (typical ~8.5 / mid-80s ceiling when demonstration is missing)
   50–69 : Adequate but thin, or partially off-brief
   0–49  : Poor — vague, superficial, or off-topic vs the user brief
 
-seo_compliance (weight 22%)
-  90–100: Primary keywords in title, headings, and body; ideal density; keywords match the brief
-  70–89 : Keywords mostly present; minor optimisation gaps
-  50–69 : Keywords present but not well distributed or weakly related to the brief
-  0–49  : Keywords missing from headings or severely underused / wrong-topic keywords
+seo_compliance (weight 14%)
+  90–100: Primary terms appear naturally where useful; no stuffing; keywords match the brief
+  70–89 : Keywords mostly present; minor gaps OK if voice stays natural
+  50–69 : Awkward / repeated keyword injection or weakly related terms
+  0–49  : Severe stuffing OR keywords missing when the brief clearly needs them
 
 brand_alignment (weight 18%)
   90–100: Tone, audience, and pain points perfectly addressed
@@ -880,31 +1169,32 @@ brand_alignment (weight 18%)
   0–49  : Wrong tone, wrong audience, pain points not addressed
 
 structure (weight 12%)
-  90–100: Clear intro → body → conclusion, logical flow, good heading hierarchy
+  90–100: Clear intro → body → conclusion, logical flow, varied section shapes
   70–89 : Good structure with minor flow issues
-  50–69 : Structure present but transitions are weak
+  50–69 : Structure present but transitions are weak or sections feel cloned
   0–49  : Poor structure — missing intro or conclusion, no logical progression
 
 factual_grounding (weight 15%)
   90–100: Claims are supported by research, statistics are attributed, audience/year
-          range match the brief; no Facebook-as-primary evidence; no invented anecdotes
+          range match the brief; no Facebook-as-primary evidence; no invented anecdotes;
+          no ornamental off-angle stats added only for authority
   70–89 : Most claims are supported with minor attribution gaps
-  50–69 : Some unsupported statements, off-audience stats (e.g. general adult scam %
-          when brief asked for NRI), or vague / wrong-geography statistics
+  50–69 : Some unsupported statements, off-audience stats, ornamental authority numbers,
+          or vague / wrong-geography statistics
   0–49  : Major claims are unsupported, hallucinated, or clearly off-brief on data asks
 
-natural_voice (weight 10%) — HOW HUMAN IT READS
+natural_voice (weight 18%) — HOW HUMAN IT READS
   90–100: Reads like a skilled human writer; varied sentence rhythm, natural flow,
-          genuine personality, zero AI-cliché phrases
+          genuine personality, zero AI/B2B-cliché phrases, no thesis restated every H2
   70–89 : Mostly natural; a few generic phrases or slightly uniform cadence
   50–69 : Noticeably AI-like — formulaic transitions, repetitive structure, filler
   0–49  : Clearly machine-generated — heavy clichés ("in today's world", "moreover",
           "in conclusion"), robotic uniform sentences, no human voice
 
 cta_effectiveness (weight 5%)
-  90–100: Clear, specific, action-oriented CTA aligned with search intent
-  70–89 : CTA present but could be stronger or more specific
-  50–69 : Weak or vague CTA
+  90–100: Clear, specific CTA used once, aligned with search intent
+  70–89 : CTA present but could be stronger, more specific, or appears more than once
+  50–69 : Weak, vague, or duplicated CTA
   0–49  : No CTA or CTA misaligned with intent
 
 === TASK ===
@@ -927,7 +1217,7 @@ Return ONLY this JSON object:
     "<specific problem not already listed in pre-check issues>",
     "<specific problem>"
   ],
-  "rewrite_instruction": "<If weighted score would be < {PASS_THRESHOLD}: one concise paragraph (maximum 150 words) of actionable revision guidance for the Writer Agent. Lead with the lowest-scoring dimension (especially factual_grounding: add 2–3 attributed research stats/citations when appropriate for this content type; and natural_voice: remove AI-cliché phrases, vary sentence rhythm, write in a natural human voice). {secondary_rewrite_hint}If off-brief, rewrite to match the USER BRIEF. If score >= {PASS_THRESHOLD}: empty string.>"
+  "rewrite_instruction": "<If weighted score would be < {PASS_THRESHOLD}: one concise paragraph (maximum 150 words) of actionable revision guidance for the Writer Agent. Lead with the lowest-scoring dimension. Prefer SUBTRACTION: remove keyword stuffing, delete repeated thesis lines, drop ornamental stats, keep at most one CTA, kill soft B2B clichés (future-ready / changes the game / the payoff is clear). Only add a research-backed figure if a section truly lacks needed proof — never pad with 2–3 stats for authority. natural_voice: remove AI-cliché phrases, vary sentence rhythm. content_quality: demonstrate remaining abstract claims in a real business scene. {secondary_rewrite_hint}If off-brief, rewrite to match the USER BRIEF. If score >= {PASS_THRESHOLD}: empty string.>"
 }}
 """
 
@@ -1277,9 +1567,10 @@ Return ONLY this JSON object:
 
     def _calculate_score(self, dimension_scores: Dict[str, int]) -> int:
         """Compute the weighted final score, rounded to the nearest integer."""
+        weights = getattr(self, "_active_weights", None) or DIMENSION_WEIGHTS
         weighted = sum(
             dimension_scores.get(dim, 0) * weight
-            for dim, weight in DIMENSION_WEIGHTS.items()
+            for dim, weight in weights.items()
         )
         return round(weighted)
 
@@ -1293,23 +1584,54 @@ Return ONLY this JSON object:
         lowest = min(DIMENSION_WEIGHTS.keys(), key=lambda d: dim_scores.get(d, 0))
         issue_bits = "; ".join(str(i) for i in issues[:3] if str(i).strip())
         secondary_bit = (
-            "place secondary keywords naturally in the introduction and conclusion; "
+            "remove keyword stuffing — use primary terms sparingly where natural; "
             if str(content_type).lower() in ("blog", "article")
             else "do not keyword-stuff; "
+        )
+        cta_bit = (
+            "close with the brand CTA verbatim once only (specific action, not 'reach out today'); "
+            if any("BRAND_CTA_MISMATCH" in str(i) for i in issues)
+            else "keep a natural close with at most one brand CTA; "
         )
         base = (
             f"Revise to reach an overall score of at least {PASS_THRESHOLD}. "
             f"Priority dimension: {lowest}. "
-            "Add attributed statistics from research only when available (named source + "
-            "concrete figure/percentage/year — never invent orgs or vague 'studies show'); "
+            "Do NOT add statistics just to look authoritative — keep only on-brief, "
+            "section-relevant proof from research; drop ornamental numbers; "
             "remove absolute uncited industry claims; "
+            "cut repeated thesis statements across sections (say the core idea once); "
+            "for abstract claims that remain, demonstrate in a real business scene "
+            "instead of only explaining; "
             f"{secondary_bit}"
             "complete every sentence; "
-            "close with the brand CTA verbatim (specific action, not 'reach out today'); "
+            f"{cta_bit}"
             "write currency as USD amounts without the $ character; "
             "rewrite in a natural human voice — ban Moreover/Furthermore/In conclusion/"
-            "it's worth noting; vary sentence length; keep natural_voice above 75."
+            "it's worth noting/leverage/cutting-edge/game-changer/Picture a…/Imagine a…/"
+            "future-ready/changes the game/the payoff is clear; "
+            "vary sentence length; "
+            "use full forms only (you are / it is / I would — never you're / it's / I'd); "
+            "remove em/en dashes from body copy; "
+            "prefer fewer, sharper examples over formulaic claim→example→transition blocks; "
+            "keep natural_voice above 80."
         )
+        humanize_bits = [
+            str(i) for i in issues if str(i).startswith("HUMANIZE_")
+        ]
+        if humanize_bits:
+            base = (
+                f"{base} HUMANIZE FAIL — fix before anything else: "
+                + "; ".join(humanize_bits[:4])
+            )
+        evidence_bits = [
+            str(i) for i in issues if str(i).startswith("EVIDENCE_")
+        ]
+        if evidence_bits:
+            base = (
+                f"{base} EVIDENCE FAIL — remove unsupported figures/"
+                "overclaims; use only Evidence Ledger facts: "
+                + "; ".join(evidence_bits[:3])
+            )
         if issue_bits:
             return f"{base} Also address: {issue_bits}"
         return base
