@@ -10,6 +10,7 @@ Responsibilities:
 - Extract user constraints (e.g. target word count).
 - Apply format hints from Extra tips (LinkedIn / email / etc.).
 - Lock the primary topic for downstream agents.
+- Build the generic fidelity BriefLock (topic + market + brand spelling).
 - Resolve the business context.
 - Route to Research (pass) or END (blocked).
 """
@@ -183,15 +184,71 @@ def manager_node(state: ContentState) -> ContentState:
             pass
 
     # Resolve brand using topic + notes so "linkedin" in Extra tips is seen
-    state["brand_context"] = business_context_service.resolve(
+    brand_context = business_context_service.resolve(
         user_input=combined_for_hints,
         brand=state.get("brand"),
     )
+    # Preserve UI/API objective — workflow detect must not overwrite leads/authority.
+    ui_objective = str(state.get("objective") or "").strip()
+    if ui_objective:
+        brand_context["objective"] = ui_objective
+
+    # Generic fidelity brief-lock (all brands) — one contract for the run.
+    try:
+        from services.fidelity_gate import build_brief_lock
+
+        brief_lock = build_brief_lock(
+            user_input=state.get("user_input") or "",
+            primary_topic=state.get("primary_topic") or "",
+            brand_context=brand_context,
+            objective=ui_objective or str(brand_context.get("objective") or ""),
+            content_type=str(state.get("content_type") or ""),
+        )
+        lock_dict = brief_lock.to_dict()
+        state["brief_lock"] = lock_dict
+        brand_context["brief_lock"] = lock_dict
+    except Exception as exc:
+        logger.warning("BriefLock build failed (non-fatal): %s", exc)
+        state["brief_lock"] = {}
+        brand_context["brief_lock"] = {}
+
+    state["brand_context"] = brand_context
 
     # Hard override from notes (works even if Content workflow locked article)
     format_hint = _format_hint_from_notes(combined_for_hints)
     if format_hint:
         _apply_format_override(state, format_hint)
+
+    # Content Quality OS — resolve mode + policy pack for the whole run
+    try:
+        from config.mode_policies import attach_mode_to_brand_context
+
+        explicit_mode = str(
+            state.get("content_mode")
+            or (state.get("brand_context") or {}).get("content_mode")
+            or ""
+        ).strip()
+        brand_context = attach_mode_to_brand_context(
+            state.get("brand_context") or {},
+            objective=ui_objective
+            or str((state.get("brand_context") or {}).get("objective") or ""),
+            content_mode=explicit_mode,
+            user_input=state.get("user_input") or "",
+            primary_topic=state.get("primary_topic") or "",
+        )
+        state["brand_context"] = brand_context
+        state["content_mode"] = str(brand_context.get("content_mode") or "seo_page")
+        state["mode_policy"] = dict(brand_context.get("mode_policy") or {})
+        logger.info(
+            "manager content_mode=%s | brand=%s | objective=%s",
+            state["content_mode"],
+            brand_context.get("display_name") or brand_context.get("namespace"),
+            ui_objective or brand_context.get("objective"),
+        )
+    except Exception as exc:
+        logger.warning("Mode policy attach failed (non-fatal): %s", exc)
+        state["content_mode"] = str(state.get("content_mode") or "seo_page")
+        state["mode_policy"] = dict(state.get("mode_policy") or {})
 
     # Language: manual UI selection wins; Auto follows prompt language (incl. Hinglish)
     try:
