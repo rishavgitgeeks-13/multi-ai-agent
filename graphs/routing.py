@@ -57,12 +57,9 @@ def review_router(state: ContentState) -> str:
     """
     Route after the Review Agent.
 
-    PASS  (needs_revision=False) → END
     FAIL  (needs_revision=True)  → "writer"
-
-    The Review Agent itself enforces the max revision limit by setting
-    needs_revision=False once the cap is reached, so this router only
-    needs to inspect a single flag.
+    PASS / force-PASS            → "final_editor" (surgical QC)
+    BLOCKED                      → END
     """
     if state.get("workflow_status") == "BLOCKED":
         logger.info("Router review → END | safety discarded draft")
@@ -83,8 +80,9 @@ def review_router(state: ContentState) -> str:
         return "writer"
 
     logger.info(
-        "Router → END | score=%d | status=%s",
+        "Router → final_editor | score=%d | status=%s | below_target=%s",
         review.get("score", 0),
         review.get("status", ""),
+        review.get("below_target", False),
     )
-    return END
+    return "final_editor"
