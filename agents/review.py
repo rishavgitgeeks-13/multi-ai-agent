@@ -246,21 +246,33 @@ def review_node(state: ContentState) -> ContentState:
                 return state
 
         logger.warning(
-            "Max revision limit (%d) reached — forcing PASS with score %d",
+            "Max revision limit (%d) reached — forcing PASS with score %d (below_target=%s)",
             max_revisions,
             review["score"],
+            int(review.get("score") or 0) < PASS_THRESHOLD,
         )
         review["needs_revision"] = False
         review["status"] = "PASS"
-        review["feedback"].append(
-            f"Maximum revision limit ({max_revisions}) reached. "
-            f"Force-passed at score {review['score']} "
-            f"(quality target is {PASS_THRESHOLD}+). "
-            f"Treat as below target if score < {PASS_THRESHOLD}."
-        )
+        if int(review.get("score") or 0) < PASS_THRESHOLD:
+            review["below_target"] = True
+            review["quality_label"] = "below_target"
+            review["feedback"].append(
+                f"BELOW TARGET: Maximum revision limit ({max_revisions}) reached. "
+                f"Force-passed at score {review['score']}/100 "
+                f"(quality target is {PASS_THRESHOLD}+). "
+                "This is NOT a 9+ ship — treat as provisional and consider another run "
+                "with higher Max Revisions."
+            )
+        else:
+            review["below_target"] = False
+            review["quality_label"] = "on_target"
+            review["feedback"].append(
+                f"Maximum revision limit ({max_revisions}) reached at score "
+                f"{review['score']} (meets {PASS_THRESHOLD}+ target)."
+            )
 
     # ------------------------------------------------------------------
-    # Route: FAIL → inject instruction and send back to Writer
+    # Route: FAIL → Writer; PASS / force-PASS → Final Editor
     # ------------------------------------------------------------------
     if review["needs_revision"]:
         state["revision_count"] = revision_count + 1
@@ -274,12 +286,19 @@ def review_node(state: ContentState) -> ContentState:
             max_revisions,
         )
     else:
-        state["workflow_status"] = "COMPLETED"
+        # Do not mark COMPLETED here — Final Editor finishes the workflow.
+        if "below_target" not in review:
+            score_now = int(review.get("score") or 0)
+            review["below_target"] = score_now < PASS_THRESHOLD
+            review["quality_label"] = (
+                "on_target" if score_now >= PASS_THRESHOLD else "below_target"
+            )
         state["current_agent"] = "review"
-        state["next_agent"] = "end"
+        state["next_agent"] = "final_editor"
         logger.info(
-            "Review PASS | score=%d | workflow complete",
+            "Review PASS | score=%d | below_target=%s | routing to final_editor",
             review["score"],
+            review.get("below_target"),
         )
 
     state["review"] = review
