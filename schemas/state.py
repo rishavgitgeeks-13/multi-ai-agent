@@ -12,12 +12,14 @@ Rules
 Field ownership
 ---------------
   Manager   → brand_context, primary_topic, user_constraints, safety,
+               content_mode, mode_policy,
                workflow_status (INIT → RUNNING | BLOCKED),
                current_agent, next_agent
   Research  → research_data, retrieved_documents, sources
   Strategy  → strategy, seo, hashtags
   Writer    → draft, metadata, formatted_output, final_output
   Review    → review, revision_count, workflow_status (→ COMPLETED | BLOCKED)
+  FinalEditor → draft, final_output, review.final_qc
 """
 
 from typing import Any, Dict, List, TypedDict
@@ -57,6 +59,16 @@ class ContentState(TypedDict):
 
     objective: str
     """seo | engagement | authority | leads"""
+
+    content_mode: str
+    """
+    Resolved quality mode for this run:
+    awareness | authority | lead_gen | seo_page
+    Set by Manager from brand + objective (+ optional API override).
+    """
+
+    mode_policy: Dict[str, Any]
+    """Policy pack for content_mode (SEO/CTA/demo/weights)."""
 
     language: str
     """English | Hindi  (default: English)"""
@@ -109,7 +121,14 @@ class ContentState(TypedDict):
         "pain_points"      : List[str],
         "keyword_direction": List[str],
         "cta"              : str,
+        "brief_lock"       : Dict,      # fidelity gate contract (optional)
     }
+    """
+
+    brief_lock: Dict[str, Any]
+    """
+    Generic fidelity contract from Manager (services.fidelity_gate.BriefLock).
+    Downstream agents must honour topic + market + brand display_name.
     """
 
     # ==========================================================================
