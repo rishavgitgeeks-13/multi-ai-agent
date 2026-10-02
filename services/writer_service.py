@@ -88,7 +88,10 @@ class ContentOutline:
     sections: List[ContentSection]
     brand_name: str = ""
     awareness_first: bool = False
+    content_mode: str = ""
+    mode_writer_notes: str = ""
     font: str = ""
+    brief_lock: Dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +119,7 @@ class WriterService:
         # and sound less template-like; helpers/review stay low-temp elsewhere.
         self._temperature = max(float(settings.DEFAULT_TEMPERATURE or 0.2), 0.55)
         self._humanize_model = settings.model_for_helpers()
-        self._humanize_temperature = 0.45
+        self._humanize_temperature = 0.55
         self._max_tokens = settings.MAX_TOKENS
 
         logger.info(
@@ -135,19 +138,77 @@ class WriterService:
         ).strip()
 
     @staticmethod
+    def _mode_fields(brand_context: Dict) -> tuple:
+        """Return (content_mode, mode_writer_notes_block) for ContentOutline."""
+        brand = brand_context if isinstance(brand_context, dict) else {}
+        mode = str(brand.get("content_mode") or "").strip()
+        notes = WriterService._mode_writer_block(
+            brand,
+            WriterService._brand_display_name(brand),
+            str(brand.get("cta") or ""),
+        )
+        return mode, notes
+
+    @staticmethod
+    def _pacing_block(outline: "ContentOutline") -> str:
+        """Prefer mode policy notes; fall back to legacy awareness rules."""
+        notes = str(getattr(outline, "mode_writer_notes", "") or "").strip()
+        if notes:
+            return notes
+        if outline.awareness_first:
+            return WriterService._awareness_first_rules(outline.brand_name, outline.cta)
+        return ""
+
+    @staticmethod
     def _is_awareness_first(brand_context: Dict) -> bool:
-        """
-        Kinvo (and brands marked content_style=awareness_first) should educate
-        before pitching. Other brands keep existing sales-friendly flow.
-        """
-        style = str(brand_context.get("content_style") or "").strip().lower()
-        if style == "awareness_first":
-            return True
-        ns = str(
-            brand_context.get("namespace") or brand_context.get("brand") or ""
-        ).strip().lower()
-        name = WriterService._brand_display_name(brand_context).lower()
-        return ns == "kinvo" or "kinvo" in name
+        """True when mode_policy or brand marks awareness pacing."""
+        from services.cta_policy import is_awareness_first
+
+        return is_awareness_first(brand_context)
+
+    @staticmethod
+    def _mode_writer_block(brand_context: Dict, brand_name: str, cta: str) -> str:
+        """Load Writer guidance from the Content Quality OS policy pack."""
+        brand = brand_context if isinstance(brand_context, dict) else {}
+        policy = brand.get("mode_policy") or {}
+        if not policy:
+            mode = str(brand.get("content_mode") or "").strip()
+            if mode:
+                try:
+                    from config.mode_policies import get_policy
+
+                    policy = get_policy(mode)
+                except Exception:
+                    policy = {}
+        notes = str(policy.get("writer_notes") or "").strip()
+        if not notes:
+            return ""
+        mode = str(policy.get("mode") or brand.get("content_mode") or "")
+        brand_n = (brand_name or "the brand").strip()
+        cta_line = (cta or "").strip() or "the brand CTA"
+        h1_rule = (
+            f"- Do NOT put {brand_n} in the H1."
+            if not policy.get("brand_in_h1")
+            else f"- Brand in H1 is allowed when natural for {mode}."
+        )
+        place = str(policy.get("brand_placement") or "")
+        place_rule = {
+            "late_third": (
+                f"- Introduce {brand_n} once in the final third near the CTA."
+            ),
+            "light": f"- Keep {brand_n} mentions light (proof over promo).",
+            "early_ok": f"- Early brand mention is OK for {mode}.",
+            "secondary": f"- Brand is secondary to topic intent for {mode}.",
+        }.get(place, "")
+        return f"""
+MODE POLICY ({mode or "seo_page"}):
+{notes}
+{h1_rule}
+{place_rule}
+- CTA style: {policy.get("cta_style") or "once"}; use "{cta_line}" at most once.
+- Demonstrate style: {policy.get("demonstrate_style") or "business"}.
+- Stats quota max: {policy.get("stats_quota_max", 2)} relevant figures (no ornamental padding).
+"""
 
     @staticmethod
     def _awareness_first_rules(brand_name: str, cta: str) -> str:
@@ -157,11 +218,19 @@ class WriterService:
 AWARENESS-FIRST PACING (mandatory — write an awareness piece, not a sales brochure):
 - Lead with the reader's real challenge, emotions, and practical guidance.
 - Keep emotional connection strong: do not jump from the problem straight into product features.
-- Do NOT mention {brand} in the introduction or in the first half of the body sections.
+- Do NOT mention {brand} or brand product names in the H1, introduction,
+  or the first half of the body sections.
+- H1 and early SEO must use *topic* phrases from the brief — not the brand name.
+- Never open with "This guide from {brand}", "Picture a…", or "Imagine a…" cinematic openers.
 - Most of the article must remain useful education a reader can act on without buying.
-- Introduce {brand} only in a late body section (near the end), as one concrete example of a structured approach — not the whole article.
-- Place the CTA "{cta_line}" only in the conclusion (verbatim), not as a hard sell in every section.
-- Avoid brochure language early (e.g. feature lists, "premium families choose us") until the late brand section.
+- Introduce {brand} only once in a late body section near the CTA —
+  as one concrete example of a structured approach, not a repeated SEO insert.
+- Place the CTA "{cta_line}" only once, in the conclusion (verbatim). Do NOT add a separate sales H2 before the conclusion.
+- Avoid brochure closers and early feature lists until the late brand section.
+- Demonstrate claims with concrete scenes from the brief's domain
+  (who / moment / what breaks or improves / result) — not abstract definitions.
+- Do not recycle the same news incident in multiple sections (max two distinct cases, each once).
+- Keep cases and stats inside the brief's stated market. Do not pad with off-market scare figures unless the brief asks for international comparison.
 """
 
     @staticmethod
@@ -191,12 +260,25 @@ AWARENESS-FIRST PACING (mandatory — write an awareness piece, not a sales broc
         )
 
     @staticmethod
-    def _brief_first_rules(primary_topic: str = "") -> str:
+    def _brief_first_rules(
+        primary_topic: str = "",
+        brief_lock: Optional[Dict] = None,
+    ) -> str:
         """
         ChatGPT/Claude-style priority: user intent beats brand pitch / SEO kit defaults.
+        Appends the generic fidelity lock (all brands).
         """
         topic = (primary_topic or "").strip()
         topic_line = f"\nUSER BRIEF TO SERVE:\n{topic}\n" if topic else ""
+        lock_block = ""
+        try:
+            from services.fidelity_gate import BriefLock, writer_prompt_block
+
+            lock = BriefLock.from_dict(brief_lock or {})
+            if lock.topic or lock.markets or lock.brand_display_name:
+                lock_block = "\n" + writer_prompt_block(lock)
+        except Exception:
+            lock_block = ""
         return f"""
 BRIEF-FIRST QUALITY BAR (mandatory — write like a top assistant, not a brand brochure):
 {topic_line}- Answer the user's actual ask first. Every section must earn its place against that brief.
@@ -205,6 +287,7 @@ BRIEF-FIRST QUALITY BAR (mandatory — write like a top assistant, not a brand b
 - Prefer concrete, specific, useful writing over vague filler. Match the requested format (blog, post, comment, email).
 - Keep geography, audience, year range, and data asks from the brief — never invent a different market.
 - If research lacks an exact figure the brief asked for, say so honestly; never pad with off-topic stats.
+{lock_block}
 """
 
     @staticmethod
@@ -215,23 +298,14 @@ BRIEF-FIRST QUALITY BAR (mandatory — write like a top assistant, not a brand b
         objective: str = "",
     ) -> bool:
         """Hard verbatim CTA only for commercial long-form / lead-gen intents."""
-        ct = (content_type or "").lower()
-        if ct in ("comment", "carousel"):
-            return False
-        obj = (objective or "").lower()
-        if obj in ("leads", "conversion", "sales"):
-            return True
-        topic = (primary_topic or "").lower()
-        soft_signals = (
-            "explain", "what is", "what are", "guide", "how to", "tips",
-            "thank", "reply", "feedback", "comment", "overview", "meaning of",
+        from services.cta_policy import cta_is_hard_required
+
+        return cta_is_hard_required(
+            content_type=content_type,
+            primary_topic=primary_topic,
+            awareness_first=awareness_first,
+            objective=objective,
         )
-        if any(s in topic for s in soft_signals):
-            return False
-        if awareness_first and obj in ("", "seo", "authority", "engagement", "awareness"):
-            # Soft CTA in conclusion still OK, but not a hard-sell checklist item
-            return False
-        return ct in ("blog", "article", "email", "linkedin")
 
     # Meta / workflow phrases that must never be pasted into published copy.
     _LEAKY_KEYWORD_RE = re.compile(
@@ -404,6 +478,11 @@ BRIEF-FIRST QUALITY BAR (mandatory — write like a top assistant, not a brand b
         secondary_keywords = self._filter_placeable_keywords(secondary_keywords, limit=8)
         target_words = self._resolve_target_words(content_type, strategy)
         topic_lock = (primary_topic or strategy.get("primary_topic") or user_input or "").strip()
+        objective = str(
+            strategy.get("objective")
+            or brand_context.get("objective")
+            or ""
+        ).strip()
         # User-asked micro length must never go through the long-form article pipeline
         # (that path forces outlines, SEO sections, and 1200+ word habits).
         micro = target_words <= 75
@@ -424,7 +503,7 @@ BRIEF-FIRST QUALITY BAR (mandatory — write like a top assistant, not a brand b
                 primary_keywords=primary_keywords,
                 secondary_keywords=secondary_keywords,
                 primary_topic=topic_lock,
-                objective=str(strategy.get("objective") or ""),
+                objective=objective,
             )
         elif micro:
             draft = self._write_micro_form(
@@ -461,7 +540,7 @@ BRIEF-FIRST QUALITY BAR (mandatory — write like a top assistant, not a brand b
                 target_words=target_words,
                 primary_topic=topic_lock,
                 additional_instructions=additional_instructions,
-                objective=str(strategy.get("objective") or ""),
+                objective=objective,
             )
 
         # Never keep an empty model response — retry once, then fall back to previous draft.
@@ -509,7 +588,7 @@ BRIEF-FIRST QUALITY BAR (mandatory — write like a top assistant, not a brand b
                     target_words=target_words,
                     primary_topic=topic_lock,
                     additional_instructions=additional_instructions,
-                    objective=str(strategy.get("objective") or ""),
+                    objective=objective,
                 )
 
         if not (draft or "").strip() and previous_draft.strip():
@@ -534,27 +613,37 @@ BRIEF-FIRST QUALITY BAR (mandatory — write like a top assistant, not a brand b
                 primary_topic=topic_lock,
             )
 
-        # Strip common AI-cliché openers that models still insert despite prompts.
+        # Deterministic cleanup only — no LLM humanize rewrite.
+        # (Full rewrite passes were making drafts more template-like / worse.)
         draft = self._strip_ai_cliches(draft or "")
-        # Light-model pass: loosen robotic cadence while keeping facts/structure.
-        if (
-            content_type in LONG_FORM_TYPES
-            and target_words >= 400
-            and not micro
-            and (draft or "").strip()
-        ):
-            draft = self._humanize_draft(
-                draft=draft,
-                outline=outline,
-                primary_topic=topic_lock,
-                content_type=content_type,
+        # Generic fidelity gate: cinematic openers + brand display_name spelling.
+        try:
+            from services.fidelity_gate import BriefLock, enforce_draft
+
+            lock = BriefLock.from_dict(
+                strategy.get("brief_lock")
+                or brand_context.get("brief_lock")
+                or {}
             )
-            draft = self._strip_ai_cliches(draft or "")
+            if not lock.brand_display_name:
+                lock.brand_display_name = self._brand_display_name(brand_context)
+            draft = enforce_draft(draft, lock)
+        except Exception:
+            pass
         # Brand guideline: never ship dashes/hyphens/em-dashes in body copy.
         # Also expand you're / it's / I'd so published text has no contractions.
         from services.text_cleanup import expand_contractions, strip_all_dashes
 
         draft = expand_contractions(strip_all_dashes(draft))
+
+        # Commercial brands: guarantee verbatim CTA survived cleanup.
+        draft = self._ensure_hard_cta(
+            draft=draft,
+            outline=outline,
+            content_type=content_type,
+            primary_topic=topic_lock,
+            objective=objective,
+        )
 
         # Hard length guard for micro asks (models often pad after the first line).
         if micro and (draft or "").strip():
@@ -713,6 +802,7 @@ BRIEF-FIRST QUALITY BAR (mandatory — write like a top assistant, not a brand b
                 ))
 
         audience_str = self._resolve_audience(strategy, brand_context)
+        mode, mode_notes = self._mode_fields(brand_context)
 
         return ContentOutline(
             title=strategy.get("title", ""),
@@ -723,7 +813,14 @@ BRIEF-FIRST QUALITY BAR (mandatory — write like a top assistant, not a brand b
             sections=sections,
             brand_name=self._brand_display_name(brand_context),
             awareness_first=self._is_awareness_first(brand_context),
+            content_mode=mode,
+            mode_writer_notes=mode_notes,
             font=str(brand_context.get("font") or "").strip(),
+            brief_lock=dict(
+                strategy.get("brief_lock")
+                or brand_context.get("brief_lock")
+                or {}
+            ),
         )
 
     def _generate_outline(
@@ -733,8 +830,9 @@ BRIEF-FIRST QUALITY BAR (mandatory — write like a top assistant, not a brand b
         brand_context: Dict,
         content_type: str,
         primary_topic: str = "",
+        research_data: Optional[Dict] = None,
     ) -> ContentOutline:
-        """Generate a full ContentOutline using the OpenAI model."""
+        """Generate a full ContentOutline using research findings + the brief."""
         target_words = self._resolve_target_words(content_type, strategy)
         topic_lock = (
             primary_topic
@@ -744,6 +842,7 @@ BRIEF-FIRST QUALITY BAR (mandatory — write like a top assistant, not a brand b
         ).strip()
         if target_words <= 75:
             # Micro pieces: no multi-section outline (avoids expanding to a full article).
+            mode, mode_notes = self._mode_fields(brand_context)
             return ContentOutline(
                 title=topic_lock[:80],
                 content_angle="concise insight",
@@ -753,7 +852,14 @@ BRIEF-FIRST QUALITY BAR (mandatory — write like a top assistant, not a brand b
                 sections=[],
                 brand_name=self._brand_display_name(brand_context),
                 awareness_first=self._is_awareness_first(brand_context),
+                content_mode=mode,
+                mode_writer_notes=mode_notes,
                 font=str(brand_context.get("font") or "").strip(),
+                brief_lock=dict(
+                    strategy.get("brief_lock")
+                    or brand_context.get("brief_lock")
+                    or {}
+                ),
             )
         n_sections = (
             "1–2"
@@ -823,15 +929,17 @@ PAIN POINTS     : {"; ".join(str(p) for p in pain_points[:5]) or "none"}
 CTA             : {strategy.get("cta") or brand_context.get("cta", "")}
 TARGET WORDS    : ~{target_words}
 
+{self._research_plan_block(research_data, strategy, brand_context, topic_lock)}
+
 Return a JSON object with this exact schema:
 {{
   "title": "<compelling H1 title that matches the PRIMARY TOPIC LOCK; include a primary keyword only if it still fits the brief>",
-  "content_angle": "<unique hook that answers the user brief>",
+  "content_angle": "<one concrete hook that answers THIS brief — geography, audience, and question from the topic lock; never a generic brand slogan>",
   "sections": [
     {{
       "heading": "<section heading>",
       "heading_level": 2,
-      "brief": "<1–2 sentences: what this section must cover for the user brief>",
+      "brief": "<1–2 sentences: what this section must cover; cite which research finding to use if relevant>",
       "keywords": ["<kw1>", "<kw2>"]
     }}
   ]
@@ -839,7 +947,10 @@ Return a JSON object with this exact schema:
 
 Rules:
 - {n_sections} sections
+- Plan FROM the research findings: map available stats/cases into specific sections
+- If research is thin, plan practical how-to / checklist sections from the brief — never invent statistics
 - Every section must advance the PRIMARY TOPIC LOCK — drop brand-template sections that do not
+- content_angle must name the reader's situation from the brief (who, where, what decision)
 {awareness_outline_rules}- H1 must be grammatical English and clearly about the user brief
 - Prefer natural titles over keyword-order dumps
 {keyword_assign_rule}
@@ -851,7 +962,7 @@ Rules:
             raw = self._call_llm(
                 system=(
                     "You are an expert content strategist. "
-                    "Create precise outlines that answer the user's brief first. "
+                    "Use the research findings first, then design an outline that answers the user's brief. "
                     "Never replace the brief with a generic brand pitch outline. "
                     "Return valid JSON only — no prose, no markdown."
                 ),
@@ -861,6 +972,31 @@ Rules:
         except Exception as exc:
             logger.error("Outline LLM call failed: %s — using fallback outline", exc)
             return self._fallback_outline(user_input, strategy, brand_context)
+
+    @staticmethod
+    def _research_plan_block(
+        research_data: Optional[Dict],
+        strategy: Dict,
+        brand_context: Dict,
+        topic_lock: str,
+    ) -> str:
+        """Evidence summary so Strategy plans from real research."""
+        try:
+            from services.fidelity_gate import BriefLock, summarize_research_for_plan
+
+            lock = BriefLock.from_dict(
+                strategy.get("brief_lock")
+                or brand_context.get("brief_lock")
+                or {}
+            )
+            if not lock.topic:
+                lock.topic = topic_lock or ""
+            return summarize_research_for_plan(research_data or {}, lock)
+        except Exception:
+            return (
+                "RESEARCH FINDINGS: unavailable. "
+                "Plan practical sections from the brief; do not invent stats."
+            )
 
     def _parse_outline_json(
         self,
@@ -889,6 +1025,7 @@ Rules:
         ]
 
         audience_str = self._resolve_audience(strategy, brand_context)
+        mode, mode_notes = self._mode_fields(brand_context)
 
         return ContentOutline(
             title=str(data.get("title", "")),
@@ -899,7 +1036,14 @@ Rules:
             sections=sections,
             brand_name=self._brand_display_name(brand_context),
             awareness_first=self._is_awareness_first(brand_context),
+            content_mode=mode,
+            mode_writer_notes=mode_notes,
             font=str(brand_context.get("font") or "").strip(),
+            brief_lock=dict(
+                strategy.get("brief_lock")
+                or brand_context.get("brief_lock")
+                or {}
+            ),
         )
 
     def _fallback_outline(
@@ -963,6 +1107,11 @@ Rules:
             brand_name=brand_name,
             awareness_first=awareness_first,
             font=str(brand_context.get("font") or "").strip(),
+            brief_lock=dict(
+                strategy.get("brief_lock")
+                or brand_context.get("brief_lock")
+                or {}
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -970,7 +1119,7 @@ Rules:
     # ------------------------------------------------------------------
 
     def _build_research_context(self, research_data: Dict) -> Dict:
-        """Pull statistics, citations, and reported news incidents."""
+        """Pull statistics, citations, incidents, and evidence ledger."""
         stats = [
             str(s).strip()
             for s in research_data.get("statistics", [])
@@ -993,11 +1142,38 @@ Rules:
                 for s in stats
                 if s.upper().startswith("NEWS CASE:")
             ]
+        ledger = research_data.get("evidence_ledger") or []
+        if not ledger:
+            try:
+                from services.evidence_ledger import build_evidence_ledger
+
+                ledger = build_evidence_ledger(
+                    documents=research_data.get("documents") or [],
+                    sources=research_data.get("sources") or [],
+                    statistics=stats,
+                    incidents=incidents,
+                    brief_lock=research_data.get("brief_lock"),
+                )
+            except Exception:
+                ledger = []
         return {
             "stats": stats,
             "citations": citations[:_MAX_CITATIONS_GLOBAL],
             "incidents": incidents[:12],
+            "evidence_ledger": ledger,
         }
+
+    @staticmethod
+    def _format_evidence_ledger(research_ctx: Dict) -> str:
+        try:
+            from services.evidence_ledger import format_ledger_for_writer
+
+            return format_ledger_for_writer(research_ctx.get("evidence_ledger") or [])
+        except Exception:
+            return (
+                "EVIDENCE LEDGER: unavailable.\n"
+                "Do NOT invent statistics. Prefer practical guidance."
+            )
 
     @staticmethod
     def _format_incidents(research_ctx: Dict, n: int = 8) -> str:
@@ -1084,6 +1260,19 @@ Rules:
         primary_str = ", ".join(primary) or "none"
         secondary_str = ", ".join(secondary) or "none"
         lead_primary = primary[0] if primary else ""
+        # Awareness: never force brand name into H1 — use first topic primary
+        if outline.awareness_first and primary:
+            brand_l = (outline.brand_name or "").strip().lower()
+            brand_compact = brand_l.replace(" ", "")
+            for cand in primary:
+                c_l = cand.lower()
+                c_compact = c_l.replace(" ", "")
+                if brand_compact and (
+                    brand_compact in c_compact or c_compact in brand_compact
+                ):
+                    continue
+                lead_primary = cand
+                break
         hard_cta = self._cta_is_hard_required(
             content_type,
             primary_topic=primary_topic,
@@ -1093,11 +1282,15 @@ Rules:
         cta_line = (outline.cta or "").strip()
         if hard_cta and cta_line:
             cta_rules = (
-                f"- End with `## Conclusion` that recaps and closes with the exact CTA: {cta_line}\n"
-                "- Prefer specific CTA wording — do not use vague \"reach out today\""
+                f"- End with `## Conclusion` that recaps and closes with the exact CTA once: {cta_line}\n"
+                "- Prefer specific CTA wording — do not use vague \"reach out today\"\n"
+                "- At most ONE CTA in the entire piece. If you include Next Steps, do not repeat the CTA there."
             )
-            cta_header = f"CTA (use verbatim): {cta_line}"
-            rev_cta = f"- End with the exact CTA phrase: {cta_line}"
+            cta_header = f"CTA (use verbatim, once only): {cta_line}"
+            rev_cta = (
+                f"- End with the exact CTA phrase once only: {cta_line} "
+                "(strip duplicate CTAs from Next Steps / mid-article)"
+            )
         else:
             cta_rules = (
                 "- End with `## Conclusion` that recaps the brief and gives a natural next step "
@@ -1123,13 +1316,16 @@ CRITICAL REVISION PASS — you must apply these editor notes:
 
 Mandatory fixes for this revision (do not skip):
 - Stay on the PRIMARY TOPIC LOCK. If the draft drifted into a brand pitch, rewrite back to the brief.
-- Embed up to 3 on-brief statistics from RESEARCH STATS (only if they match the brief),
-  each with clear attribution (source + figure/year when present).
+- Prefer SUBTRACTION: cut repeated thesis lines, keyword stuffing, ornamental stats, and duplicate CTAs.
+- For abstract claims that only *explain*, replace with a short real-business demonstration
+  OR delete the fluff if the idea was already shown earlier.
+- Keep statistics only when on-brief and useful to that section (0–2 is fine). Never pad to hit a quota.
 - Never invent organisation names, report titles, years, or percentages.
-- If a research snippet is vague or off-brief, omit it — do not force a stats quota.
+- If a research snippet is vague or off-brief, omit it.
 - Remove absolute uncited claims unless they appear in stats/citations.
-- Place secondary keywords only when they still fit the brief (intro + conclusion when natural).
+- Do not force secondary keywords into intro/conclusion — use a term only when natural.
 {rev_cta}
+- At most ONE brand CTA in the whole piece (prefer Conclusion; strip duplicates from Next Steps).
 - Every sentence must be complete — no mid-sentence cutoffs.
 - Write currency as "USD 500" / "USD 1,000" — never use the $ character.
 """
@@ -1142,7 +1338,10 @@ PRIMARY TOPIC LOCK (mandatory — do not change meaning, roles, or subject):
 """
 
         extra_block = self._format_editorial_intent(additional_instructions)
-        brief_block = self._brief_first_rules(primary_topic)
+        brief_block = self._brief_first_rules(
+            primary_topic,
+            brief_lock=getattr(outline, "brief_lock", None) or {},
+        )
 
         length_rules = (
             f"TARGET LENGTH   : ~{target_words} words — hit this length closely"
@@ -1156,21 +1355,32 @@ PRIMARY TOPIC LOCK (mandatory — do not change meaning, roles, or subject):
             "If outline sections would overflow, shorten each section — do not add filler."
         )
 
-        awareness_block = ""
-        if outline.awareness_first:
-            awareness_block = self._awareness_first_rules(outline.brand_name, outline.cta)
+        awareness_block = self._pacing_block(outline)
+        topic_h1 = outline.awareness_first or (
+            str(getattr(outline, "content_mode", "") or "")
+            in ("awareness", "authority", "seo_page")
+        )
 
         h1_kw_rule = (
-            f'- Start with `# {outline.title}` — include "{lead_primary}" in the H1 '
-            "only if it still matches the PRIMARY TOPIC LOCK"
-            if lead_primary
-            else f"- Start with `# {outline.title}`"
+            f'- Start with `# {outline.title}` — include topic keyword "{lead_primary}" in the H1 '
+            "only if it still matches the PRIMARY TOPIC LOCK. "
+            "Do NOT put the brand name in the H1 on awareness pieces."
+            if lead_primary and topic_h1
+            else (
+                f'- Start with `# {outline.title}` — include "{lead_primary}" in the H1 '
+                "only if it still matches the PRIMARY TOPIC LOCK"
+                if lead_primary
+                else f"- Start with `# {outline.title}`"
+            )
         )
+        if not lead_primary:
+            h1_kw_rule = f"- Start with `# {outline.title}`"
 
         prompt = f"""Write a complete {content_type} in Markdown.
 {revision_block}{topic_block}{brief_block}{extra_block}{awareness_block}
 TITLE           : {outline.title}
 CONTENT ANGLE   : {outline.content_angle}
+(Stay faithful to CONTENT ANGLE — open and structure around that hook, not a generic brand pitch.)
 AUDIENCE        : {outline.audience}
 TONE            : {outline.tone}
 {cta_header}
@@ -1184,39 +1394,58 @@ OUTLINE TO FOLLOW:
 RESEARCH STATS (prefer on-brief items — do not invent figures):
 {self._pick_stats(research_ctx, n=stats_n, primary_topic=primary_topic)}
 
+{self._format_evidence_ledger(research_ctx)}
+
 REPORTED NEWS INCIDENTS (evidence-driven cases from news — use when the brief asks for cases):
 {self._format_incidents(research_ctx, n=8)}
 
 CITATIONS AVAILABLE:
 {citations_block}
 
-SEO placement rules (apply without hijacking the brief):
+SEO placement rules (apply lightly — naturalness beats density):
 {h1_kw_rule}
-- Use primary keywords naturally in intro/body when they fit the brief (no stuffing)
-- Use secondary keywords only when they still match the brief
-- At least one `##` heading may contain a keyword if it remains grammatical and on-topic
+- Use a primary keyword early only if it fits naturally (no stuffing, no repeating it in every H2)
+- Secondary keywords are optional flavor — never force them into intro and conclusion
+- Prefer one clean keyworded heading over many awkward keyword headings
 
 Content rules:
 - Write like a skilled human editor: clear, specific, useful — not generic AI filler
+- State the core thesis once; later sections advance new angles — do not restate the same thesis
+- Demonstrate > explain (9+ rule): when you make an abstract claim, show a real-business scene
+  OR skip the claim if you already demonstrated it earlier (avoid claim→example clones in every H2)
 {self._no_prompt_leak_rules()}
 {self._grounding_rules(outline.brand_name)}
 - Stay strictly on the PRIMARY TOPIC LOCK — never invert victims/roles or change the subject
 - Follow geography from the PRIMARY TOPIC LOCK / user brief only (India, US, UK, etc.);
   do not invent a market from the brand, and do not fill with unrelated-country forum stats
-- When the brief asks for cases / incidents (e.g. nanny abuse cases), lead with REPORTED NEWS INCIDENTS
-  (city, year, allegation/charges, outlet). Do NOT fill the article with only national NCRB/POCSO
-  totals that are not nanny-specific. You may cite NCRB briefly as broader context and must say
-  clearly when official nanny-specific aggregates or state-wise nanny counts are unavailable.
+- When the brief asks for cases / incidents, lead with REPORTED NEWS INCIDENTS
+  (city, year, allegation/charges, outlet). Prefer on-brief, topic-specific incidents over
+  national aggregates that do not match the brief; say clearly when topic-specific counts are unavailable.
+- Use at most TWO distinct news incidents in the whole article, each mentioned once. Do not
+  restate the same case in multiple sections.
+- Match evidence geography to the brief. Do not centre the piece on off-market incidents;
+  omit them or use at most one short overseas line as optional context.
 - When the user asked for numbers/cases/state-wise data, prioritize REPORTED NEWS INCIDENTS + on-brief
   RESEARCH STATS; never invent case counts or anonymous victim stories
+- Never invent survey names, percentages, or salary bands. If RESEARCH STATS / EVIDENCE LEDGER lack a figure, say
+  ranges are approximate or omit the number — do not invent survey/report titles.
+- EVERY percentage, case count, or salary band MUST appear in the EVIDENCE LEDGER (same figure).
+  If the ledger is empty, write with zero invented statistics.
+- For news incidents, use reported / alleged / under investigation wording — never treat unresolved cases as proven fact.
+- Do NOT open with "Picture this:", cinematic kitchen scenes, or "the stakes are high".
+  Write a plain, useful intro.
+- Do NOT append Citations / Sources / References footers — packaging adds ## Sources once.
 - Write a hook-driven introduction (100–150 words, no heading under the H1) unless target length is under 400 words — then keep intro proportional
 - Cover every outline section as `##` headings (scale section length to hit ~{target_words} words total)
+- Every `##` body section (not Conclusion) should advance a NEW angle. Include a real-business
+  demonstration only when it proves that section's point — do not clone the same example shape
+  in every heading.
 - Complete every sentence — never stop mid-word or mid-sentence
 {cta_rules}
-- When RESEARCH STATS lists on-brief items and target length >= 400, embed up to 3 attributed statistics
-  (intro or early body, one mid-article, one in proof/closing). Format: "According to <Source> (Year if available): <figure>…"
-  Do NOT repeat the same statistic three times. Do NOT cite Facebook posts/videos as primary evidence.
-  Do NOT invent stats to hit a quota when on-brief research is thin.
+- When RESEARCH STATS lists on-brief items and target length >= 400, you MAY embed 0–2
+  attributed statistics that are clearly relevant to the section (not ornamental).
+  Format: "According to <Source> (Year if available): <figure>…"
+  Do NOT invent stats. Do NOT pad with off-angle authority numbers. Thin research → fewer stats.
 {self._stat_context_rules()}
 - When a proof / case-study / real-world section appears in the outline, ground it with research stats or named citations above — do not use brand name alone as proof; do not invent anonymous case stories
 - Never invent percentages, benchmarks, financial figures, organisation names, or report titles
@@ -1259,9 +1488,7 @@ Write the complete {content_type}:
         if len(draft_for_edit) > 14000:
             draft_for_edit = previous_draft[:7000] + "\n\n…\n\n" + previous_draft[-5000:]
 
-        awareness_block = ""
-        if outline.awareness_first:
-            awareness_block = self._awareness_first_rules(outline.brand_name, outline.cta)
+        awareness_block = self._pacing_block(outline)
 
         hard_cta = self._cta_is_hard_required(
             content_type,
@@ -1282,7 +1509,10 @@ Write the complete {content_type}:
 
         prompt = f"""Revise the existing {content_type} Markdown. Do NOT rewrite from scratch.
 {topic_block}
-{self._brief_first_rules(primary_topic)}
+{self._brief_first_rules(
+            primary_topic,
+            brief_lock=getattr(outline, "brief_lock", None) or {},
+        )}
 EDITOR FEEDBACK (must fix):
 {rewrite_instruction}
 
@@ -1297,8 +1527,10 @@ SECONDARY KEYWORDS : {secondary_str}
 RESEARCH STATS (prefer on-brief — do not invent figures):
 {self._pick_stats(research_ctx, n=8, primary_topic=primary_topic)}
 
+{self._format_evidence_ledger(research_ctx)}
+
 REPORTED NEWS INCIDENTS:
-{self._format_incidents(research_ctx, n=8)}
+{self._format_incidents(research_ctx, n=6)}
 
 CITATIONS AVAILABLE:
 {citations_block}
@@ -1382,11 +1614,13 @@ CTA to preserve if still on-brief: {outline.cta or "optional"}
 RESEARCH STATS (only use these — prefer on-brief; do not invent):
 {self._pick_stats(research_ctx, n=8, primary_topic=primary_topic)}
 
+{self._format_evidence_ledger(research_ctx)}
+
 CITATIONS:
 {chr(10).join(f"- {c}" for c in research_ctx.get("citations", [])[:6]) or "none"}
 
 Required edits:
-1. Prefer on-brief attributed statistics from RESEARCH STATS (audience + year range if the brief asks).
+1. Prefer on-brief attributed statistics from RESEARCH STATS / EVIDENCE LEDGER only.
    Embed up to 3 distinct figures — do NOT repeat the same stat, do NOT cite Facebook as primary evidence,
    and do NOT invent numbers to hit a quota. If on-brief stats are thin, keep guidance honest.
    Format: "According to <Source> (Year): <figure>…"
@@ -1394,7 +1628,7 @@ Required edits:
 2. If listed, weave these secondary keywords naturally into intro and/or conclusion: {secondary_line}
    Skip ungrammatical fragments; use natural English instead. Skip keywords that fight the brief.
 3. Remove invented anonymous anecdotes / unsourced "real-world examples".
-4. Do not invent figures, organisations, or years.
+4. Do not invent figures, organisations, or years. Every figure must exist in the EVIDENCE LEDGER.
 5. Do not use the $ character — write USD amounts.
 6. Keep structure/headings; return the FULL revised Markdown only.
 7. Never replace the article topic with a brand pitch while enriching.
@@ -1427,6 +1661,7 @@ DRAFT:
 
 TITLE           : {outline.title}
 CONTENT ANGLE   : {outline.content_angle}
+(Stay faithful to CONTENT ANGLE — open and structure around that hook, not a generic brand pitch.)
 AUDIENCE        : {outline.audience}
 TONE            : {outline.tone}
 
@@ -1511,6 +1746,7 @@ Write this section:
 
 TITLE           : {outline.title}
 CONTENT ANGLE   : {outline.content_angle}
+(Stay faithful to CONTENT ANGLE — open and structure around that hook, not a generic brand pitch.)
 CTA             : {outline.cta}
 TONE            : {outline.tone}
 
@@ -1782,7 +2018,10 @@ DRAFT TO EXPAND:
             topic_block = (
                 f"\nPRIMARY TOPIC LOCK (do not change meaning/roles):\n{primary_topic}\n"
             )
-        brief_block = self._brief_first_rules(primary_topic)
+        brief_block = self._brief_first_rules(
+            primary_topic,
+            brief_lock=getattr(outline, "brief_lock", None) or {},
+        )
         extra_block = self._format_editorial_intent(additional_instructions)
         rewrite_block = ""
         if rewrite_instruction.strip():
@@ -1836,6 +2075,8 @@ SEO notes:
 
 Human voice (important):
 - Sound like a real person, not AI. Vary sentence length, be specific and concrete
+- When you make an abstract claim, show what it looks like in a real business
+  (workflow, decision, cost/time, team scene) — do not only explain
 - Write full words — never contractions (write "you are" not "you're", "it is" not "it's", "I would" not "I'd")
 - Avoid clichés: no "in today's fast-paced world", "moreover", "furthermore", "in conclusion", "dive in", "game-changer", "unlock the power"
 - First lines must be a strong hook when writing LinkedIn / social posts
@@ -1942,8 +2183,9 @@ Return ONLY the comment text. No hashtags. No titles. No lists.
         secondary_line = ""
         if long_form:
             secondary_line = (
-                "- Place at least one secondary keyword naturally in the introduction "
-                "and one in the conclusion.\n"
+                "- Do not force secondary keywords into the introduction or conclusion. "
+                "Use a search term only when it fits the sentence naturally.\n"
+                "- Never repeat the same core thesis in every section.\n"
             )
         return (
             "WRITE LIKE A HUMAN (critical — content must not read as AI-generated):\n"
@@ -1955,6 +2197,9 @@ Return ONLY the comment text. No hashtags. No titles. No lists.
             "Do not make every section the same shape or word count.\n"
             "- Open sections with a concrete scene, question, number, or claim — "
             "never with a dictionary definition or \"X is important\".\n"
+            "- Demonstrate > explain (9+ bar): for every abstract claim, show what it "
+            "looks like in a real business — a workflow moment, decision trade-off, "
+            "cost/time impact, or team scene. Do not only explain the idea.\n"
             "- Use natural transitions. NEVER use these AI-cliché phrases: "
             "\"in today's fast-paced world\", \"in today's digital age\", \"in the ever-evolving\", "
             "\"in the landscape of\", \"in the realm of\", \"a tapestry of\", "
@@ -2095,8 +2340,9 @@ Return ONLY the comment text. No hashtags. No titles. No lists.
         content_type: str = "article",
     ) -> str:
         """
-        Light-model pass: keep facts/structure/CTA, rewrite for natural human voice.
-        Falls back to the original draft on empty/failed responses.
+        Light polish only. Awareness brands get a gentle awareness edit;
+        commercial drafts get a minimal copy-edit so we do not flatten good prose.
+        Falls back to the original on empty/failed/length-off responses.
         """
         text = (draft or "").strip()
         if not text:
@@ -2104,57 +2350,92 @@ Return ONLY the comment text. No hashtags. No titles. No lists.
 
         word_n = len(text.split())
         topic = (primary_topic or outline.title or "").strip()
-        system = (
-            "You are a senior human editor. Rewrite the draft so it sounds naturally "
-            "written by a skilled person — not AI. Keep every fact, statistic, citation, "
-            "heading, and the brand CTA. Do not add new claims. Do not shorten more than "
-            "10%. Return Markdown only."
-        )
-        user = f"""Humanize this {content_type} draft.
+        awareness = bool(getattr(outline, "awareness_first", False))
+        brand = (outline.brand_name or "the brand").strip()
+        cta = (outline.cta or "").strip()
 
-PRIMARY TOPIC (stay on it): {topic or "(unchanged)"}
-BRAND / TONE: {outline.brand_name} — {outline.tone}
-AUDIENCE: {outline.audience}
-REQUIRED CTA (keep verbatim near the end if present): {outline.cta or "(none)"}
+        if awareness:
+            system = (
+                "You are a careful human editor. Improve natural voice lightly. "
+                "Do not invent facts. Keep headings. Return Markdown only."
+            )
+            user = f"""Lightly humanize this {content_type} (awareness-first brand).
 
-REWRITE RULES:
-- Keep all ## / ### headings and their order.
-- Keep attributed stats, named sources, URLs, and case details.
-- Vary sentence length; cut AI-cliché openers and transitions.
-- Write full forms only — never contractions (you are / it is / I would / do not / we have).
-- Prefer "of the family" style possessives over apostrophe possessives when easy.
-- Replace brochure/template phrasing with plain, specific language.
-- Do not invent stories, numbers, or new sections.
-- No dash characters (use spaces/commas; asterisk bullets only).
-- Target about {word_n} words (stay within ±10%).
+PRIMARY TOPIC: {topic or "(unchanged)"}
+BRAND: {brand} — introduce only late; CTA near the end if present: {cta or "(none)"}
+
+RULES (do not over-rewrite):
+- Keep ## headings and almost all substance.
+- Move early {brand} mentions out of the intro if present.
+- Cut only obvious brochure lines (this guide from…, tailored to, peace of mind).
+- Mentions of any one news case: at most once in the whole piece.
+- Full forms only (you are / it is / do not). No dash characters.
+- Target ~{word_n} words (±10%).
+
+DRAFT:
+{text}
+"""
+        else:
+            system = (
+                "You are a careful copy editor. Make small wording improvements only. "
+                "Do not restructure, do not invent facts, do not remove the brand CTA. "
+                "Return Markdown only."
+            )
+            cta_rule = (
+                f'- Keep this exact CTA phrase somewhere near the end, unchanged: "{cta}"'
+                if cta
+                else "- Do not invent a new CTA."
+            )
+            user = f"""Light copy-edit this {content_type}. Prefer keeping the original voice.
+
+PRIMARY TOPIC: {topic or "(unchanged)"}
+BRAND / TONE: {brand} — {outline.tone}
+
+RULES:
+- Keep structure, headings, stats, and meaning.
+- {cta_rule}
+- Fix only stiff AI openers if obvious; do not rewrite every paragraph.
+- Full forms only (you are / it is / do not). No dash characters.
+- Target ~{word_n} words (±10%).
 
 DRAFT:
 {text}
 """
         try:
             logger.info(
-                "Humanize pass | model=%s | words_in=%d",
+                "Humanize pass | model=%s | words_in=%d | mode=%s",
                 self._humanize_model,
                 word_n,
+                "awareness" if awareness else "commercial_light",
             )
             rewritten = self._call_llm(
                 system=system,
                 user=user,
                 max_tokens=min(8192, max(2048, int(word_n * 2.2))),
                 model=self._humanize_model,
-                temperature=self._humanize_temperature,
+                temperature=0.35 if not awareness else self._humanize_temperature,
             )
             out = (rewritten or "").strip()
             if not out:
                 logger.warning("Humanize pass returned empty — keeping original draft")
                 return draft
             out_words = len(out.split())
-            # Guard: reject collapse or wild expansion
             if out_words < int(word_n * 0.75) or out_words > int(word_n * 1.25):
                 logger.warning(
                     "Humanize pass length off | in=%d out=%d — keeping original",
                     word_n,
                     out_words,
+                )
+                return draft
+            if (
+                cta
+                and not awareness
+                and cta.lower() in text.lower()
+                and cta.lower() not in out.lower()
+            ):
+                logger.warning(
+                    "Humanize dropped CTA '%s' — keeping original draft",
+                    cta,
                 )
                 return draft
             logger.info("Humanize pass complete | words_out=%d", out_words)
@@ -2163,53 +2444,60 @@ DRAFT:
             logger.warning("Humanize pass failed (non-fatal): %s", exc)
             return draft
 
+    def _ensure_hard_cta(
+        self,
+        draft: str,
+        outline: "ContentOutline",
+        content_type: str = "article",
+        primary_topic: str = "",
+        objective: str = "",
+    ) -> str:
+        """
+        If commercial policy requires a hard CTA and it is missing, append it
+        once before hashtags. Does not change soft/awareness drafts.
+        """
+        text = (draft or "").rstrip()
+        cta = (outline.cta or "").strip()
+        if not text or not cta:
+            return draft
+
+        hard = self._cta_is_hard_required(
+            content_type=content_type,
+            primary_topic=primary_topic or "",
+            awareness_first=bool(getattr(outline, "awareness_first", False)),
+            objective=objective or "",
+        )
+        if not hard:
+            return draft
+        if cta.lower() in text.lower():
+            return draft
+
+        hashtag_m = re.search(r"\n+Hashtags:\s*[^\n]+\s*$", text, flags=re.I)
+        block = f"\n\n## Next Step\n\n{cta}.\n"
+        if hashtag_m:
+            text = text[: hashtag_m.start()] + block + text[hashtag_m.start() :]
+        else:
+            text = text + block
+        logger.info("Ensured hard CTA appended | cta=%s", cta[:60])
+        return text
+
     @staticmethod
     def _strip_ai_cliches(draft: str) -> str:
         """
         Deterministic cleanup of common AI-tell openers/transitions.
-        Does not rewrite meaning — only removes/replaces stock phrases.
+        Shared scrub covers B2B clichés; keep tool-leak and cinematic strips here.
         """
         if not draft:
             return draft
-        replacements = [
-            (r"(?i)\bMoreover,\s*", ""),
-            (r"(?i)\bFurthermore,\s*", ""),
-            (r"(?i)\bAdditionally,\s*", ""),
-            (r"(?i)\bIn conclusion,\s*", ""),
-            (r"(?i)\bIn summary,\s*", ""),
-            (r"(?i)\bTo sum up,\s*", ""),
-            (r"(?i)\bIt'?s worth noting that\s*", ""),
-            (r"(?i)\bIt is worth noting that\s*", ""),
-            (r"(?i)\bIt'?s important to note that\s*", ""),
-            (r"(?i)\bIt is important to note that\s*", ""),
-            (r"(?i)\bIn today'?s fast-paced world,?\s*", ""),
-            (r"(?i)\bIn today'?s digital age,?\s*", ""),
-            (r"(?i)\bIn the ever[- ]evolving\s+\w+,?\s*", ""),
-            (r"(?i)\bIn the landscape of\s+", "In "),
-            (r"(?i)\bIn the realm of\s+", "In "),
-            (r"(?i)\bWhen it comes to\s+", "For "),
-            (r"(?i)\bAt the end of the day,?\s*", ""),
-            (r"(?i)\bNeedless to say,?\s*", ""),
-            (r"(?i)\bWithout further ado,?\s*", ""),
+        from services.text_cleanup import scrub_ai_cliches
+
+        text = scrub_ai_cliches(draft)
+        # Extra Writer-only / brand-scene / tool-leak cleanups
+        extras = [
             (r"(?i)\bexpatriates\b", "families living abroad"),
             (r"(?i)\bexpatriate\b", "family living abroad"),
             (r"(?i)\bFirst,\s+discuss\b", "Start with"),
             (r"(?i)\bFirst discuss\b", "Start with"),
-            (r"(?i)\bThis article explores\b", "Here's a clear look at"),
-            (r"(?i)\bIn this article,?\s+we will\b", "We'll"),
-            (r"(?i)\bLet us examine\b", "Look at"),
-            (r"(?i)\bAs we delve into\b", "On"),
-            (r"(?i)\bdelve into\b", "look at"),
-            (r"(?i)\bunlock the power of\b", "get more from"),
-            (r"(?i)\ba game[- ]changer\b", "a real shift"),
-            (r"(?i)\ba testament to\b", "proof of"),
-            (r"(?i)\bplays a (?:crucial|vital|pivotal) role\b", "matters"),
-            (r"(?i)\bleverage\b", "use"),
-            (r"(?i)\bcutting[- ]edge\b", "modern"),
-            (r"(?i)\brobust\b", "strong"),
-            (r"(?i)\bseamless\b", "smooth"),
-            (r"(?i)\bholistic\b", "full"),
-            # Research-tool leaks that must never appear in published copy
             (r"(?i)\s*\(\s*Tavily\s+research\s+summary\s*\)", ""),
             (r"(?i)\s*\(\s*Source:\s*Tavily(?:\s+research\s+summary)?\s*\)", ""),
             (r"(?i)\bTavily\s+research\s+summary\b", ""),
@@ -2217,11 +2505,30 @@ DRAFT:
             (r"(?i)\s*\(\s*NewsAPI(?:\s+summary)?\s*\)", ""),
             (r"(?i)\baccording to Tavily\b", "available research suggests"),
             (r"(?i)\bAccording to Tavily\b", "Available research suggests"),
+            (r"(?i)\bThis guide from\s+[\w\s/]+\s+is tailored to\b", "This guide is for"),
+            (r"(?i)\bis tailored to\b", "is for"),
+            (r"(?i)\bpeace of mind\b", "confidence"),
+            (r"(?i)\bfor years to come\b", "over the long term"),
+            (r"(?i)\bstructured platforms\b", "vetted services"),
+            (r"(?i)\bnever a simple checklist item\b", "not a quick formality"),
+            (r"(?i)\bchildcare landscape\b", "childcare options"),
+            (r"(?i)\bcompelling combination of\b", "useful mix of"),
+            (r"(?i)\bPicture this scenario:\s*", ""),
+            (r"(?i)\bWhether you are searching\b", "If you are looking"),
+            (r"(?i)\bPicture this(?: scenario)?:\s*", ""),
+            (r"(?i)^Picture\s+(?:a|an|the|your)\s+[^.!?\n]{8,180}[.!?]\s*", ""),
+            (r"(?i)\bPicture\s+(?:a|an|the)\s+(?:family|parent|couple|household|morning|scene)\b[^.!?\n]{0,160}[.!?]\s*", ""),
+            (r"(?i)^Imagine\s+(?:a|an|the|your)\s+[^.!?\n]{8,180}[.!?]\s*", ""),
+            (r"(?i)\bImagine\s+(?:a|an|the)\s+(?:weekday|busy|typical|quiet)\s+[^.!?\n]{5,120}[.!?]\s*", ""),
+            (r"(?i)\bthis scene is familiar\b[^.!?\n]{0,80}[.!]?\s*", ""),
+            (r"(?i)\bYour family deserves nothing less\.?\s*", ""),
+            (r"(?i)\bthe stakes are high\.?\s*", ""),
+            (r"(?i)\bcan truly transform your everyday life\.?\s*", ""),
+            # Old bug: do not introduce "not only" — flatten leftover forms
+            (r"(?i)\bnot just a task;?\s*it is\b", "more than paperwork. It is"),
         ]
-        text = draft
-        for pattern, repl in replacements:
+        for pattern, repl in extras:
             text = re.sub(pattern, repl, text)
-        # Clean doubled spaces left by removals (preserve newlines)
         text = re.sub(r"[ \t]{2,}", " ", text)
         text = re.sub(r"\n{3,}", "\n\n", text)
         return text.strip()
