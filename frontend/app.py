@@ -443,14 +443,19 @@ def _inject_app_chrome_css() -> None:
             font-weight: 700 !important;
         }
 
-        /* ---------- Sidebar ---------- */
+        /* ---------- Sidebar (calm, compact) ---------- */
         [data-testid="stSidebar"] {
-            background: var(--ei-sidebar) !important;
+            background: #f4f7f6 !important;
             border-right: 1px solid var(--ei-line);
         }
         [data-testid="stSidebar"] > div:first-child {
             background: transparent;
-            padding-top: 0.75rem;
+            padding-top: 0.55rem;
+            padding-left: 0.55rem;
+            padding-right: 0.55rem;
+        }
+        [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
+            gap: 0.28rem !important;
         }
         [data-testid="stSidebar"] * {
             color: var(--ei-ink) !important;
@@ -459,40 +464,75 @@ def _inject_app_chrome_css() -> None:
         [data-testid="stSidebar"] caption,
         [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
             color: var(--ei-muted) !important;
+            font-size: 0.78rem !important;
+            line-height: 1.35 !important;
+        }
+        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h1,
+        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h2,
+        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h3,
+        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] strong {
+            font-size: 0.82rem !important;
+            font-weight: 600 !important;
+            letter-spacing: 0.01em;
+            color: var(--ei-muted) !important;
+            text-transform: uppercase;
+        }
+        [data-testid="stSidebar"] .ei-side-brand p,
+        [data-testid="stSidebar"] .ei-side-brand strong {
+            text-transform: none !important;
+            font-size: 0.95rem !important;
+            font-weight: 700 !important;
+            color: var(--ei-ink) !important;
+            letter-spacing: -0.02em !important;
+            margin: 0 !important;
+        }
+        [data-testid="stSidebar"] .ei-side-user p {
+            margin: 0.1rem 0 0.45rem 0 !important;
+            color: var(--ei-muted) !important;
+            font-size: 0.78rem !important;
         }
         [data-testid="stSidebar"] .stButton > button {
-            background: var(--ei-surface);
-            border: 1px solid var(--ei-line);
+            background: transparent;
+            border: none;
             color: var(--ei-ink) !important;
             text-align: left;
             justify-content: flex-start;
-            border-radius: 10px;
-            padding: 0.42rem 0.7rem;
-            font-size: 0.86rem;
+            border-radius: 8px;
+            padding: 0.32rem 0.55rem;
+            font-size: 0.8rem;
             font-weight: 500;
-            line-height: 1.25;
+            line-height: 1.3;
             min-height: 0;
             box-shadow: none;
-            white-space: normal;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
         [data-testid="stSidebar"] .stButton > button p,
         [data-testid="stSidebar"] .stButton > button span,
         [data-testid="stSidebar"] .stButton > button div {
             color: inherit !important;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
         [data-testid="stSidebar"] .stButton > button:hover {
-            background: var(--ei-accent-soft);
-            border-color: var(--ei-accent-border);
+            background: rgba(15, 118, 110, 0.08);
+            border: none;
         }
-        /* Primary (New chat / active conversation): force white text on teal */
+        /* Primary (New chat / active conversation) */
         [data-testid="stSidebar"] .stButton > button[kind="primary"],
         [data-testid="stSidebar"] .stButton > button[data-testid="baseButton-primary"],
         [data-testid="stSidebar"] button[kind="primary"],
         [data-testid="stSidebar"] button[data-testid="baseButton-primary"] {
             background: var(--ei-accent) !important;
-            border-color: var(--ei-accent) !important;
+            border: none !important;
             color: #ffffff !important;
-            font-weight: 650 !important;
+            font-weight: 600 !important;
+            border-radius: 9px !important;
+            padding: 0.45rem 0.7rem !important;
+            justify-content: center !important;
+            text-align: center !important;
         }
         [data-testid="stSidebar"] .stButton > button[kind="primary"] *,
         [data-testid="stSidebar"] .stButton > button[data-testid="baseButton-primary"] *,
@@ -506,7 +546,6 @@ def _inject_app_chrome_css() -> None:
         [data-testid="stSidebar"] .stButton > button[kind="primary"]:hover,
         [data-testid="stSidebar"] .stButton > button[data-testid="baseButton-primary"]:hover {
             background: #0d9488 !important;
-            border-color: #0d9488 !important;
             color: #ffffff !important;
         }
         [data-testid="stSidebar"] .stButton > button[kind="primary"]:hover *,
@@ -514,15 +553,87 @@ def _inject_app_chrome_css() -> None:
             color: #ffffff !important;
             -webkit-text-fill-color: #ffffff !important;
         }
+        /* Compact secondary actions (Refresh / Log out) */
+        [data-testid="stSidebar"] .ei-side-actions .stButton > button {
+            background: var(--ei-surface);
+            border: 1px solid var(--ei-line) !important;
+            justify-content: center !important;
+            text-align: center !important;
+            font-size: 0.74rem !important;
+            padding: 0.28rem 0.4rem !important;
+            border-radius: 8px !important;
+            color: var(--ei-muted) !important;
+        }
         [data-testid="stSidebar"] hr {
             border-color: var(--ei-line);
-            margin: 0.6rem 0;
+            margin: 0.4rem 0 0.35rem 0;
+            opacity: 0.7;
         }
         [data-testid="stSidebar"] [data-testid="stExpander"] {
-            background: var(--ei-surface);
-            border: 1px solid var(--ei-line);
-            border-radius: 12px;
-            margin-bottom: 0.45rem;
+            background: transparent !important;
+            border: 1px solid transparent !important;
+            border-radius: 8px;
+            margin-bottom: 0.15rem;
+            box-shadow: none !important;
+        }
+        [data-testid="stSidebar"] [data-testid="stExpander"]:hover {
+            background: rgba(255, 255, 255, 0.55) !important;
+            border-color: var(--ei-line) !important;
+        }
+        [data-testid="stSidebar"] [data-testid="stExpander"] details summary {
+            padding: 0.2rem 0.15rem !important;
+            font-size: 0.8rem !important;
+            font-weight: 550 !important;
+        }
+        [data-testid="stSidebar"] [data-testid="stExpander"] details summary p,
+        [data-testid="stSidebar"] [data-testid="stExpander"] details summary span {
+            font-size: 0.8rem !important;
+            font-weight: 550 !important;
+            color: var(--ei-ink) !important;
+            text-transform: none !important;
+        }
+
+        /* ---------- Top bar (actions live here; sidebar stays light) ---------- */
+        .ei-topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin: 0 0 0.35rem 0;
+        }
+        .ei-topbar-who {
+            display: flex;
+            align-items: baseline;
+            gap: 0.55rem;
+        }
+        .ei-topbar-who strong {
+            font-size: 1.05rem;
+            font-weight: 700;
+            color: var(--ei-ink);
+            letter-spacing: -0.02em;
+        }
+        .ei-topbar-who span {
+            font-size: 0.75rem;
+            color: var(--ei-muted);
+            background: var(--ei-accent-soft);
+            border: 1px solid var(--ei-accent-border);
+            border-radius: 999px;
+            padding: 0.12rem 0.55rem;
+            font-weight: 600;
+        }
+        /* Compact top action buttons (not sidebar) */
+        .main .stButton > button[kind="secondary"],
+        .main .stButton > button[data-testid="baseButton-secondary"] {
+            border-radius: 9px !important;
+            border: 1px solid var(--ei-line) !important;
+            background: var(--ei-surface) !important;
+            color: var(--ei-ink) !important;
+            font-weight: 550 !important;
+            min-height: 2.35rem;
+        }
+        .main .stButton > button[kind="primary"],
+        .main .stButton > button[data-testid="baseButton-primary"] {
+            border-radius: 9px !important;
+            min-height: 2.35rem;
         }
 
         /* ---------- Workflow tabs = clear pill buttons ---------- */
@@ -949,21 +1060,182 @@ def _score_color(score: int) -> str:
     return "red"
 
 
-def display_review_panel(review: Dict) -> None:
+def _flag_chip_key(flag: str) -> str:
+    f = (flag or "").upper()
+    if "SEO_STUFF" in f:
+        return "seo_stuff"
+    if "CTA" in f or "DUPLICATE" in f:
+        return "duplicate_cta"
+    if "THESIS" in f:
+        return "thesis_repeat"
+    if "B2B" in f or "CLICHE" in f:
+        return "b2b_cliche"
+    if "ORNAMENTAL" in f:
+        return "ornamental_stat"
+    if "FORMULA" in f:
+        return "formula"
+    if "MODE_H1" in f or "MODE" in f:
+        return "mode_h1"
+    if "DEMONSTRATE" in f:
+        return "demonstrate"
+    return "seo_stuff"
+
+
+def _chip_label(key: str) -> str:
+    return {
+        "seo_stuff": "Remove SEO stuffing",
+        "duplicate_cta": "Merge duplicate CTAs",
+        "thesis_repeat": "Cut thesis repeats",
+        "b2b_cliche": "Rewrite B2B clichés",
+        "ornamental_stat": "Drop ornamental stats",
+        "formula": "Vary section openings",
+        "mode_h1": "Fix brand-in-H1 (mode)",
+        "demonstrate": "Add one concrete demo",
+    }.get(key, key.replace("_", " ").title())
+
+
+def display_review_panel(review: Dict, result: Optional[Dict] = None) -> None:
     score = review.get("score", 0)
     status = review.get("status", "—")
     dim_scores = review.get("dimension_scores") or {}
+    below_target = bool(review.get("below_target")) or (
+        str(status).upper() == "PASS" and int(score or 0) < 95
+    )
+    quality_label = review.get("quality_label") or (
+        "below_target" if below_target else "reviewed"
+    )
+    result = result or {}
+    content_mode = str(result.get("content_mode") or "").strip()
+    mode_policy = result.get("mode_policy") or {}
+    mode_label = (
+        (mode_policy.get("label") if isinstance(mode_policy, dict) else None)
+        or content_mode.replace("_", " ").title()
+        or "—"
+    )
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("Overall Score", f"{score} / 100")
-    col2.metric("Status", status)
-    col3.metric("Revisions Used", st.session_state.get("_revision_count", 0))
+    status_display = status
+    if below_target and str(status).upper() == "PASS":
+        status_display = "PASS (below target)"
+    col2.metric("Status", status_display)
+    col3.metric("Quality", "9+ target" if quality_label == "on_target" else "Provisional")
+    col4.metric("Mode", mode_label)
+
+    if content_mode:
+        st.caption(
+            f"Mode: **{mode_label}** — QC/SEO/CTA follow this pack "
+            "(e.g. awareness keeps brand out of H1)."
+        )
+
+    if below_target:
+        st.warning(
+            f"Score {score}/100 is below the 95 quality target. "
+            "This run was completed (often after max revisions). "
+            "Increase Max Revisions and regenerate for a stronger shot at 9+."
+        )
 
     if dim_scores:
         st.markdown("#### Dimension Scores")
         for dim, val in dim_scores.items():
             label = dim.replace("_", " ").title()
             st.progress(int(val) / 100, text=f"{label}: {val}/100")
+
+    final_qc = review.get("final_qc") or {}
+    flags = list(final_qc.get("flags") or final_qc.get("flags_before") or [])
+    if final_qc or flags:
+        with st.expander("Final QC / Editor", expanded=bool(final_qc.get("flag_count"))):
+            st.caption(
+                f"Edited: {final_qc.get('edited')} · "
+                f"Flags remaining: {final_qc.get('flag_count', 0)}"
+            )
+            for flag in flags[:12]:
+                st.markdown(f"• {flag}")
+
+            # Actionable chips → surgical endpoint
+            chip_keys = []
+            for flag in flags:
+                k = _flag_chip_key(str(flag))
+                if k not in chip_keys:
+                    chip_keys.append(k)
+            if chip_keys:
+                st.markdown("**Surgical fixes**")
+                cols = st.columns(min(len(chip_keys), 4))
+                for i, key in enumerate(chip_keys[:8]):
+                    if cols[i % len(cols)].button(
+                        _chip_label(key),
+                        key=f"qc_chip_{key}_{i}",
+                        use_container_width=True,
+                    ):
+                        md = _get_markdown(result)
+                        payload = {
+                            "draft": md,
+                            "flags": [key],
+                            "content_mode": content_mode,
+                            "primary_topic": result.get("primary_topic") or "",
+                            "content_type": (
+                                (result.get("metadata") or {}).get("content_type")
+                                or "article"
+                            ),
+                            "brand_context": {
+                                "content_mode": content_mode,
+                                "mode_policy": mode_policy,
+                            },
+                            "strategy": (result.get("final_output") or {}).get("seo")
+                            and {"seo": (result.get("final_output") or {}).get("seo")}
+                            or {},
+                        }
+                        with st.spinner(f"Applying: {_chip_label(key)}…"):
+                            fixed = call_api("editor/surgical", payload, timeout=180)
+                        if fixed.get("ok") and fixed.get("draft"):
+                            # Patch session result markdown
+                            for wf_key, stored in list(
+                                (st.session_state.get("results") or {}).items()
+                            ):
+                                if stored is result or stored.get("request_id") == result.get(
+                                    "request_id"
+                                ):
+                                    fo = dict(stored.get("final_output") or {})
+                                    content = fo.get("content")
+                                    if isinstance(content, dict):
+                                        content = dict(content)
+                                        content["markdown"] = fixed["draft"]
+                                        fo["content"] = content
+                                    else:
+                                        fo["content"] = {
+                                            "markdown": fixed["draft"],
+                                        }
+                                    stored = dict(stored)
+                                    stored["final_output"] = fo
+                                    rev = dict(stored.get("review") or {})
+                                    rev["final_qc"] = fixed.get("final_qc") or rev.get(
+                                        "final_qc"
+                                    )
+                                    stored["review"] = rev
+                                    st.session_state.results[wf_key] = stored
+                                    break
+                            st.success("Surgical edit applied — scroll to draft.")
+                            st.rerun()
+                        else:
+                            st.error(fixed.get("error") or "Surgical edit failed.")
+
+            if st.button("Approve as gold", key="approve_gold_btn"):
+                md = _get_markdown(result)
+                gold_payload = {
+                    "draft": md,
+                    "user_input": result.get("primary_topic") or "",
+                    "brand": (result.get("metadata") or {}).get("brand"),
+                    "content_mode": content_mode or "seo_page",
+                    "primary_topic": result.get("primary_topic") or "",
+                    "save_reference": True,
+                }
+                gold = call_api("editor/approve-gold", gold_payload, timeout=60)
+                if gold.get("ok"):
+                    st.success(
+                        f"Saved gold fixture `{gold.get('fixture_id')}` → {gold.get('path')}"
+                    )
+                else:
+                    st.error(gold.get("error") or "Approve-as-gold failed.")
 
     feedback = review.get("feedback", [])
     issues = review.get("issues", [])
@@ -1114,6 +1386,11 @@ def display_result(result: Dict, workflow_type: str) -> None:
         f"Generated successfully · "
         f"Score: {result.get('review', {}).get('score', '—')}/100 · "
         f"Status: {result.get('review', {}).get('status', '—')}"
+        + (
+            f" · Mode: {str(result.get('content_mode') or '').replace('_', ' ').title()}"
+            if result.get("content_mode")
+            else ""
+        )
     )
 
     st.session_state["_revision_count"] = result.get("revision_count", 0)
@@ -1160,10 +1437,15 @@ def display_result(result: Dict, workflow_type: str) -> None:
             ):
                 st.divider()
                 st.markdown("**Hashtags:** " + " ".join(str(h) for h in hashtags))
-            # Always surface Sources from the citations payload (even when
-            # ## Sources is already in markdown) so the list is hard to miss.
+            # Show Sources panel only when markdown does not already include ## Sources
+            # (avoids a duplicate list under the article).
             citations = final.get("citations") or []
-            if citations and workflow_type != "email":
+            if (
+                citations
+                and workflow_type != "email"
+                and "## Sources" not in (markdown or "")
+                and "## References" not in (markdown or "")
+            ):
                 st.divider()
                 st.markdown("**Sources / Citations**")
                 for i, cit in enumerate(citations[:12], start=1):
@@ -1173,7 +1455,6 @@ def display_result(result: Dict, workflow_type: str) -> None:
                         ).strip()
                         url = str(cit.get("url") or "").strip()
                         if url:
-                            # Avoid "title — url" labels inside the link text
                             if url in label:
                                 label = label.replace(url, "").strip(" .—–-")
                             label = label or "Source"
@@ -1198,7 +1479,7 @@ def display_result(result: Dict, workflow_type: str) -> None:
 
     # --- Review tab ---
     with tabs[1]:
-        display_review_panel(result.get("review", {}))
+        display_review_panel(result.get("review", {}), result=result)
 
     # --- Metadata tab ---
     with tabs[2]:
@@ -1222,18 +1503,32 @@ def display_result(result: Dict, workflow_type: str) -> None:
 # ==========================================================================
 
 if not st.session_state.authenticated:
+    from services.user_auth import allowed_email_domain
     from services.user_auth import login as auth_login
     from services.user_auth import signup as auth_signup
 
+    _domain = allowed_email_domain()
     _inject_app_chrome_css()
     st.title("Editorial Intelligence")
-    st.caption("Sign in to create content and keep your chat history")
+    st.caption(
+        f"Team members: sign in with @{_domain} only. "
+        "Admin portal: username **admin** (bootstrap)."
+    )
 
     tab_login, tab_signup = st.tabs(["Log in", "Sign up"])
 
     with tab_login:
         with st.form("login_form"):
-            login_user = st.text_input("Username", autocomplete="username", key="login_user")
+            login_user = st.text_input(
+                "Email / Admin id",
+                placeholder=f"name@{_domain}  or  admin",
+                autocomplete="username",
+                key="login_user",
+                help=(
+                    f"Team: @{_domain} work email only. "
+                    "Admin: use username admin."
+                ),
+            )
             login_pass = st.text_input(
                 "Password",
                 type="password",
@@ -1251,11 +1546,18 @@ if not st.session_state.authenticated:
                 from services.chat_history_service import stable_session_id
 
                 from services.user_auth import is_admin as auth_is_admin
+                from services.user_auth import normalize_user_id
 
-                user_key = (login_user or msg or "").strip()
+                # Prefer normalised email as session key when applicable
+                _ok_id, _email, _ = normalize_user_id(login_user or "")
+                user_key = (_email if _ok_id else (login_user or msg or "")).strip()
+                if auth_is_admin(login_user or ""):
+                    user_key = (login_user or msg or "").strip()
                 st.session_state.authenticated = True
                 st.session_state.username = user_key
-                st.session_state.is_admin = auth_is_admin(user_key)
+                st.session_state.is_admin = auth_is_admin(user_key) or auth_is_admin(
+                    login_user or ""
+                )
                 # Stable per-user session so history + ConversationMemory persist
                 st.session_state.session_id = stable_session_id(user_key)
                 st.session_state.chat_history = []
@@ -1269,13 +1571,23 @@ if not st.session_state.authenticated:
             else:
                 st.error(msg)
         st.caption(
-            "New here? Open the **Sign up** tab to create an account. "
-            "Team admin can also use the bootstrap credentials from APP_USERNAME / APP_PASSWORD."
+            f"**Team:** only @{_domain} emails can sign up or log in "
+            "(Gmail and other domains are blocked). "
+            "After signup, wait for admin approval. "
+            "**Admin portal:** log in as `admin` with the admin password."
         )
 
     with tab_signup:
         with st.form("signup_form"):
-            su_user = st.text_input("Choose a username", key="signup_user")
+            su_user = st.text_input(
+                f"Work email (@{_domain})",
+                placeholder=f"name@{_domain}",
+                key="signup_user",
+                help=(
+                    f"Required domain: @{_domain}. "
+                    "You may enter the full email or only the name before @."
+                ),
+            )
             su_pass = st.text_input(
                 "Choose a password",
                 type="password",
@@ -1287,7 +1599,7 @@ if not st.session_state.authenticated:
                 key="signup_pass2",
             )
             signup_submit = st.form_submit_button(
-                "Create account",
+                "Request access",
                 type="primary",
                 use_container_width=True,
             )
@@ -1295,9 +1607,16 @@ if not st.session_state.authenticated:
             ok, msg = auth_signup(su_user, su_pass, su_pass2)
             if ok:
                 st.success(msg)
-                st.info("Switch to the **Log in** tab and sign in with your new account.")
+                st.info(
+                    "Your request is **pending**. "
+                    "An admin must approve it before you can log in."
+                )
             else:
                 st.error(msg)
+        st.caption(
+            f"Accounts without @{_domain} are rejected. "
+            "Do not use Gmail or personal emails."
+        )
 
     st.stop()
 
@@ -1326,47 +1645,193 @@ def _render_conversation_buttons(
     active_id = (st.session_state.active_conversation or {}).get("id")
     for i, conv in enumerate((conversations or [])[:limit]):
         title = str(conv.get("title") or "Untitled")
-        label = title if len(title) <= 42 else title[:41] + "…"
+        label = title if len(title) <= 34 else title[:33] + "…"
+        is_active = conv.get("id") == active_id
         if st.button(
             label,
             key=f"{key_prefix}_{i}_{conv.get('id')}",
             use_container_width=True,
-            type="primary" if conv.get("id") == active_id else "secondary",
+            type="primary" if is_active else "secondary",
         ):
             open_conversation(conv)
 
 
-with st.sidebar:
-    st.markdown("**Editorial Intelligence**")
-    who_label = st.session_state.username or "user"
-    if st.session_state.is_admin:
-        st.caption(f"@{who_label} · Admin")
-    else:
-        st.caption(f"@{who_label}")
+def _render_approvals_panel(key_prefix: str = "top") -> None:
+    """Signup approvals — shown in the top bar for admin."""
+    try:
+        from services.user_auth import (
+            approve_user,
+            list_pending_signups,
+            person_label as _person_label,
+            reject_user,
+        )
+
+        pending = list_pending_signups()
+    except Exception:
+        pending = []
+        _person_label = lambda u: u  # noqa: E731
+
+    n_pending = len(pending or [])
+    with st.expander(f"Approvals ({n_pending})", expanded=False):
+        if not pending:
+            st.caption("None waiting")
+            return
+        for i, req in enumerate(pending):
+            email = str(req.get("username") or req.get("email") or "")
+            name = _person_label(email)
+            st.caption(f"{name} · {email}")
+            c1, c2 = st.columns(2)
+            if c1.button(
+                "Approve",
+                key=f"{key_prefix}_approve_{i}_{email}",
+                use_container_width=True,
+            ):
+                ok_a, msg_a = approve_user(
+                    email, actor=st.session_state.username or "admin"
+                )
+                (st.success if ok_a else st.error)(msg_a)
+                st.rerun()
+            if c2.button(
+                "Reject",
+                key=f"{key_prefix}_reject_{i}_{email}",
+                use_container_width=True,
+            ):
+                ok_r, msg_r = reject_user(
+                    email, actor=st.session_state.username or "admin"
+                )
+                (st.warning if ok_r else st.error)(msg_r)
+                st.rerun()
+
+
+def _render_team_panel(key_prefix: str = "side") -> None:
+    """Team usage monitor — lives in the left sidebar for admin."""
+    try:
+        from services.chat_history_service import (
+            get_user_history as _admin_get_hist,
+            get_user_usage_summary,
+            list_history_usernames,
+            turns_to_conversations as _ttc,
+        )
+        from services.user_auth import list_users as _list_users
+        from services.user_auth import person_label as _person_label
+
+        roster = _list_users()
+        history_users = set(list_history_usernames())
+    except Exception:
+        roster = []
+        history_users = set()
+        _ttc = None
+        _admin_get_hist = None
+        get_user_usage_summary = None
+        _person_label = lambda u: u  # noqa: E731
+
+    by_email: Dict[str, Dict[str, Any]] = {}
+    for row in roster or []:
+        email = str(row.get("username") or row.get("email") or "").strip().lower()
+        if email:
+            by_email[email] = dict(row)
+    for hist_user in history_users:
+        by_email.setdefault(
+            hist_user,
+            {"username": hist_user, "email": hist_user, "status": "active"},
+        )
+
+    st.markdown("**Team**")
+    if not by_email:
+        st.caption("No users yet")
+        return
+
+    def _sort_key(item):
+        email, _row = item
+        try:
+            summary = get_user_usage_summary(email) if get_user_usage_summary else {}
+        except Exception:
+            summary = {}
+        return (str(summary.get("last_activity") or ""), email)
+
+    for email, row in sorted(by_email.items(), key=_sort_key, reverse=True):
+        status = str(row.get("status") or "approved").lower()
+        name = _person_label(email)
+        try:
+            usage = get_user_usage_summary(email) if get_user_usage_summary else {}
+        except Exception:
+            usage = {}
+        conv_n = int(usage.get("conversation_count") or 0)
+        with st.expander(f"{name} · {conv_n}", expanded=False):
+            st.caption(f"{email} · {status}")
+            if _admin_get_hist is None or _ttc is None:
+                st.caption("History unavailable")
+                continue
+            turns = _admin_get_hist(email, limit=80)
+            convs = _ttc(turns)
+            if not convs:
+                st.caption("No chats yet")
+            else:
+                _render_conversation_buttons(
+                    convs,
+                    key_prefix=f"{key_prefix}_admin_{email}",
+                    limit=12,
+                )
+
+
+def _render_top_bar() -> None:
+    """Account actions + admin tools at the top so the left bar stays chats-only."""
+    try:
+        from services.user_auth import person_label as _top_person
+
+        who = _top_person(st.session_state.username or "")
+    except Exception:
+        who = _display_name(st.session_state.username or "")
+
+    role = "Admin" if st.session_state.is_admin else "Member"
+    st.markdown(
+        f"""
+        <div class="ei-topbar">
+          <div class="ei-topbar-who">
+            <strong>{who}</strong>
+            <span>{role}</span>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    b1, b2, b3 = st.columns([1.2, 1, 1])
+    with b1:
+        if st.button("New chat", key="top_new_chat", use_container_width=True, type="primary"):
+            start_new_chat()
+            st.rerun()
+    with b2:
+        if st.button("Refresh", key="top_refresh", use_container_width=True):
+            remote = fetch_user_history(st.session_state.username)
+            st.session_state.chat_history = _normalize_turns(remote)
+            st.session_state.history_loaded = True
+            st.session_state.pop("_team_activity", None)
+            st.rerun()
+    with b3:
+        if st.button("Log out", key="top_logout", use_container_width=True):
+            st.session_state.authenticated = False
+            st.session_state.username = ""
+            st.session_state.is_admin = False
+            st.session_state.chat_history = []
+            st.session_state.history_loaded = False
+            st.session_state.results = {}
+            st.session_state.active_conversation = None
+            st.session_state.main_view = "create"
+            st.session_state.pop("_team_activity", None)
+            st.rerun()
 
     if st.session_state.get("_history_save_error"):
         st.warning(st.session_state["_history_save_error"])
 
-    if st.button("New chat", key="nav_new_gen", use_container_width=True, type="primary"):
-        start_new_chat()
-        st.rerun()
 
-    if st.button("Log out", key="nav_logout", use_container_width=True):
-        st.session_state.authenticated = False
-        st.session_state.username = ""
-        st.session_state.is_admin = False
-        st.session_state.chat_history = []
-        st.session_state.history_loaded = False
-        st.session_state.results = {}
-        st.session_state.active_conversation = None
-        st.session_state.main_view = "create"
-        st.session_state.pop("_team_activity", None)
-        st.rerun()
+with st.sidebar:
+    st.markdown(
+        '<div class="ei-side-brand"><strong>Chats</strong></div>',
+        unsafe_allow_html=True,
+    )
+    st.caption("Your recent work")
 
-    st.divider()
-
-    # ---- Own chat history (every user) ----
-    st.markdown("**Your chats**")
     if not st.session_state.history_loaded:
         remote = fetch_user_history(st.session_state.username)
         if not remote:
@@ -1374,60 +1839,32 @@ with st.sidebar:
         st.session_state.chat_history = _normalize_turns(remote)
         st.session_state.history_loaded = True
 
-    if st.button("Refresh", key="nav_refresh_hist", use_container_width=True):
-        remote = fetch_user_history(st.session_state.username)
-        st.session_state.chat_history = _normalize_turns(remote)
-        st.session_state.history_loaded = True
-        if st.session_state.is_admin:
-            st.session_state["_team_activity"] = fetch_team_activity(200)
-        st.rerun()
-
     my_conversations = get_conversations()
     if not my_conversations:
-        st.caption("No chats yet — generate to start.")
+        st.caption("No chats yet")
     else:
-        _render_conversation_buttons(my_conversations, "my_hist", limit=35)
+        _render_conversation_buttons(my_conversations, "my_hist", limit=18)
+        if len(my_conversations) > 18:
+            st.caption(f"+{len(my_conversations) - 18} older")
 
-    # ---- Admin only: all users grouped as @username ----
     if st.session_state.is_admin:
         st.divider()
-        st.markdown("**Admin · all users**")
-        st.caption("Team histories — only visible to admin")
-        if "_team_activity" not in st.session_state:
-            st.session_state["_team_activity"] = fetch_team_activity(200)
-
-        from services.chat_history_service import (
-            group_conversations_by_user,
-            turns_to_conversations as _ttc,
-        )
-
-        team_convs = _ttc(st.session_state.get("_team_activity") or [])
-        by_user = group_conversations_by_user(team_convs)
-        if not by_user:
-            st.caption("No team history yet.")
-        else:
-            for username, convs in by_user.items():
-                display = username if username.startswith("@") else f"@{username}"
-                with st.expander(f"{display} · {len(convs)}", expanded=False):
-                    _render_conversation_buttons(
-                        convs,
-                        key_prefix=f"admin_{username}",
-                        limit=25,
-                    )
+        _render_team_panel(key_prefix="side")
 
     st.divider()
     if not st.session_state.brands:
         st.session_state.brands = fetch_brands()
-
     with st.expander("Brands", expanded=False):
         if st.session_state.brands:
             for brand in st.session_state.brands:
-                st.caption(f"**{brand['display_name']}**")
+                st.caption(brand.get("display_name") or brand.get("name") or "")
         else:
-            st.caption("Brands unavailable")
+            st.caption("Unavailable")
 
-    st.caption("Chats stay on your account.")
 
+# Ensure brands loaded for workflow selectors
+if not st.session_state.brands:
+    st.session_state.brands = fetch_brands()
 
 # ==========================================================================
 # Brand selector — shared across all tabs
@@ -1441,13 +1878,17 @@ if not st.session_state.brands:
 # Main canvas — history reopen OR create workflows
 # ==========================================================================
 
+_render_top_bar()
+if st.session_state.is_admin:
+    _render_approvals_panel(key_prefix="top")
+
 if st.session_state.main_view == "history" and st.session_state.active_conversation:
     st.title(ist_greeting(st.session_state.username))
     display_conversation_view(st.session_state.active_conversation)
     st.stop()
 
 st.title(ist_greeting(st.session_state.username))
-st.caption("Describe what you need — we handle the rest. Your chats stay on the left.")
+st.caption("Describe what you need — we handle the rest.")
 render_beginner_guide("general")
 
 # ==========================================================================
@@ -1504,9 +1945,9 @@ with tab_auto:
             "Max Revisions",
             1,
             5,
-            1,
+            2,
             key="a_rev",
-            help="How many rewrite attempts if review asks for fixes. 1 is usually enough.",
+            help="Rewrite attempts toward 95+ quality. Use 2–3 for articles; 1 is often too early.",
         )
 
         a_submitted = st.form_submit_button(
@@ -1588,13 +2029,32 @@ with tab_content:
             key="c_lang",
             help="Auto-detect follows the prompt language. Manual choice always wins.",
         )
+        c_mode = st.selectbox(
+            "Content mode (Quality OS)",
+            [
+                "Auto (from brand / objective)",
+                "awareness",
+                "authority",
+                "lead_gen",
+                "seo_page",
+            ],
+            key="c_mode",
+            help="Awareness keeps brand out of H1. Lead gen allows hard CTA. Leave Auto unless you need an override.",
+        )
         c_instructions = st.text_input(
             "Extra tips (optional — skip if unsure)",
             key="c_instr",
             placeholder="e.g. density 1–1.5%, include state-wise cases…",
             help="Hashtags and brand keywords usually come from the brand kit automatically.",
         )
-        c_max_rev = st.slider("Max Revisions", 1, 5, 1, key="c_rev")
+        c_max_rev = st.slider(
+            "Max Revisions",
+            1,
+            5,
+            2,
+            key="c_rev",
+            help="Rewrite attempts toward 95+ quality. Prefer 2–3 for long articles.",
+        )
         c_submitted = st.form_submit_button("Generate content", use_container_width=True, type="primary")
 
     if c_submitted:
@@ -1612,6 +2072,8 @@ with tab_content:
                 "session_id": st.session_state.session_id,
                 "max_revisions": c_max_rev,
             }
+            if c_mode and not c_mode.startswith("Auto"):
+                payload["content_mode"] = c_mode
             with st.spinner("Running 5-agent pipeline… this can take a few minutes."):
                 result = call_api("generate/content", payload)
             st.session_state.results["content"] = result
@@ -1712,7 +2174,14 @@ with tab_seo:
             key="s_lang",
             help="Auto-detect follows the prompt language. Manual choice always wins.",
         )
-        s_max_rev = col4.slider("Max Revisions", 1, 5, 1, key="s_rev")
+        s_max_rev = col4.slider(
+            "Max Revisions",
+            1,
+            5,
+            2,
+            key="s_rev",
+            help="Rewrite attempts toward 95+ quality. Prefer 2–3 for SEO articles.",
+        )
         s_instructions = st.text_input(
             "Extra tips (optional — skip if unsure)",
             key="s_instr",
