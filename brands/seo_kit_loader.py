@@ -186,16 +186,22 @@ def select_keywords_for_brief(
 
     selected_primary: List[str] = []
     if kit.get("require_all_primary"):
-        selected_primary = list(primary_kws)
+        # Marketing kits (e.g. MPM) want the full primary set on-brand.
+        # If the brief shares zero tokens with any primary, do not force-dump
+        # the whole list onto an off-domain topic (brief wins).
+        overlaps = [p for p in primary_kws if _score_phrase(p, topic_tokens) > 0]
+        if overlaps or not topic_tokens:
+            selected_primary = list(primary_kws)
+        else:
+            selected_primary = []
     elif primary_kws:
         scored = sorted(
             primary_kws,
             key=lambda p: _score_phrase(p, topic_tokens),
             reverse=True,
         )
-        best = scored[0]
-        selected_primary.append(best)
-        for p in scored[1:]:
+        # Brief fidelity: only keep primaries that overlap the topic.
+        for p in scored:
             if _score_phrase(p, topic_tokens) > 0:
                 selected_primary.append(p)
         # Cap primaries to keep SEO natural (unless require_all)
@@ -203,7 +209,13 @@ def select_keywords_for_brief(
 
     selected_secondary: List[str] = []
     if kit.get("require_all_secondary"):
-        selected_secondary = list(secondary_kws)
+        overlaps_sec = [
+            s for s in secondary_kws if _score_phrase(s, topic_tokens) > 0
+        ]
+        if overlaps_sec or not topic_tokens:
+            selected_secondary = list(secondary_kws)
+        else:
+            selected_secondary = []
     else:
         for s in secondary_kws:
             if _score_phrase(s, topic_tokens) > 0:
@@ -215,7 +227,10 @@ def select_keywords_for_brief(
                 key=lambda p: _score_phrase(p, topic_tokens),
                 reverse=True,
             )
-            selected_secondary = scored[:2]
+            if scored and _score_phrase(scored[0], topic_tokens) > 0:
+                selected_secondary = scored[:2]
+            elif not topic_tokens:
+                selected_secondary = scored[:2]
 
     selected_service: List[str] = []
     for s in service_kws:
