@@ -181,6 +181,8 @@ Requirements:
 - Naturally include 1–2 of the target keywords
 - Use bullet points or numbered lists where they improve clarity
 - Include at least one concrete example, stat, or data point
+- Prefer demonstration over explanation: if the section makes an abstract claim,
+  show what it looks like in a real business (workflow, decision, cost, timeline, team scene)
 - End with a sentence that transitions naturally to the next topic
 - No filler openers ("In this section…", "Now let's look at…")
 ```
@@ -325,6 +327,11 @@ FORMAT REQUIREMENTS:
   Write "you are", "it is", "I would", "do not", "we have", "cannot" — not you're / it's / I'd / don't / we've / can't.
   Prefer "of the family" / "the child needs" over "family's" / "child's" when natural.
 - Open sections with a concrete scene, question, number, or claim — not a definition or "X is important".
+- Demonstrate, do not only explain (9+ rule):
+  Whenever you make an abstract claim, ask: "Can I show the reader what this looks like in a real business?"
+  If yes, replace the explanation with a short demonstration — a workflow moment, decision trade-off,
+  cost/time impact, team conversation, or before/after scene the reader can picture.
+  Ideas can be strong and still score ~8.5 if they stay abstract; 9+ needs showing, not just telling.
 - Prefer plain words over brochure/template phrasing (no "leverage", "synergy", "cutting-edge", "robust", "seamless", "holistic").
 - Never use AI-cliché transitions or scaffolding: "moreover", "furthermore", "in conclusion", "in today's fast-paced world", "it's worth noting", "dive in", "game-changer", "unlock the power", "in this article we will…".
 - Never use dash or hyphen characters in body copy.
