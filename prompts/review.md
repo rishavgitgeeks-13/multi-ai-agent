@@ -88,8 +88,10 @@ CTA                   : {{strategy.cta}}
 Score each dimension 0–100:
 
 content_quality (weight 20%)
-  90–100: Exceptional depth, clear structure, compelling narrative, well-supported claims
-  70–89 : Good coverage with minor gaps in depth or clarity
+  90–100: Exceptional depth — strong ideas *demonstrated* in real-business scenes
+          (workflow, decision, cost/time, team moment), not only explained abstractly
+  70–89 : Good ideas and coverage, but some claims stay explanatory instead of shown
+          (typical ~8.5 ceiling when abstract claims are not demonstrated)
   50–69 : Adequate but thin — lacks examples, data, or original insight
   0–49  : Poor — vague, superficial, off-topic, or factually unsupported
 
@@ -285,8 +287,12 @@ When forcing PASS at the revision limit, append to `feedback`:
 Measures depth, accuracy, originality, and reader value.
 - ✅ Specific examples, statistics with attribution, original insight
 - ✅ Claims are supported, not asserted
+- ✅ Abstract ideas are *demonstrated* in a real-business scene (workflow, decision,
+  cost/time impact, team conversation) — not only explained in general terms
 - ✅ Reader learns something concrete and actionable
 - ❌ Vague generalisations ("AI is the future of work")
+- ❌ Strong ideas left abstract — explaining what something means instead of showing
+  what it looks like in a real business (this caps quality around ~8.5 / mid-80s)
 - ❌ Statements without evidence
 - ❌ Surface-level treatment of complex topics
 
