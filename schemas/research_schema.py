@@ -87,6 +87,12 @@ class ResearchData(BaseModel):
     Used when the brief asks for cases, not only national aggregate stats.
     """
 
+    evidence_ledger: List[Dict[str, Any]] = Field(default_factory=list)
+    """
+    Structured claim pack (generic fidelity). Writer may only use these facts.
+    Each item: id, kind, statement, figure, year, geography, source_title, url, confidence.
+    """
+
     def to_state_dict(self) -> Dict[str, Any]:
         """
         Serialize to the flat dict expected by ContentState["research_data"].
@@ -99,6 +105,7 @@ class ResearchData(BaseModel):
             "statistics": self.statistics,
             "citations": self.citations,
             "incidents": self.incidents,
+            "evidence_ledger": self.evidence_ledger,
         }
 
     @classmethod
