@@ -76,6 +76,7 @@ class CitationService:
         self,
         research_data: Dict,
         user_input: str,
+        brief_lock: Optional[Dict] = None,
     ) -> List[Dict]:
         """Extract, format, and return all citations from the research package."""
         logger.info("CitationService.run() | query=%s…", user_input[:60])
@@ -92,6 +93,11 @@ class CitationService:
         )
 
         merged = self._merge_and_deduplicate(structured, plain)
+        merged = self._filter_topic_relevant(
+            merged,
+            user_input or "",
+            brief_lock=brief_lock,
+        )
         logger.info("CitationService complete | citations=%d", len(merged))
         return merged
 
@@ -312,6 +318,32 @@ No prose. No markdown.
                 unique.append(citation)
 
         return unique
+
+    @staticmethod
+    def _filter_topic_relevant(
+        citations: List[Dict],
+        user_input: str,
+        brief_lock: Optional[Dict] = None,
+    ) -> List[Dict]:
+        """
+        Drop off-brief / junk Sources using the generic fidelity gate.
+
+        Brand-specific patch lists are intentionally avoided — BriefLock
+        carries topic tokens + markets for every brand.
+        """
+        if not citations:
+            return citations
+        try:
+            from services.fidelity_gate import BriefLock, build_brief_lock, filter_citations
+
+            if brief_lock:
+                lock = BriefLock.from_dict(brief_lock)
+            else:
+                lock = build_brief_lock(user_input=user_input or "", primary_topic=user_input or "")
+            return filter_citations(citations, lock, user_input=user_input or "")
+        except Exception as exc:
+            logger.warning("Fidelity citation filter failed: %s — keeping raw list", exc)
+            return citations
 
     # ------------------------------------------------------------------
     # Utilities
