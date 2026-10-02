@@ -1,6 +1,11 @@
 """
 Simple user auth for Streamlit login / signup.
 
+Rules (company access):
+  - User id must be a @gitgeeks.com email (local part alone is auto-appended).
+  - Signup creates a *pending* request — only admin can approve.
+  - Login is allowed only for approved users (plus bootstrap APP_USERNAME admin).
+
 Storage priority:
   1. MongoDB `users` collection (when MONGODB_URI is available)
   2. Local JSON file at data/users.json (fallback)
@@ -19,13 +24,24 @@ import re
 import secrets
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 _USERS_FILE = Path(__file__).resolve().parent.parent / "data" / "users.json"
-_USERNAME_RE = re.compile(r"^[a-zA-Z0-9_.-]{3,40}$")
 _PBKDF2_ITERATIONS = 120_000
+
+# Company email domain — signup/login identity must use this.
+ALLOWED_EMAIL_DOMAIN = "gitgeeks.com"
+_LOCAL_PART_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{1,62}[a-zA-Z0-9]$|^[a-zA-Z0-9]{2,64}$")
+_EMAIL_RE = re.compile(
+    rf"^[a-zA-Z0-9][a-zA-Z0-9._-]{{0,62}}[a-zA-Z0-9]@{re.escape(ALLOWED_EMAIL_DOMAIN)}$",
+    re.I,
+)
+
+STATUS_PENDING = "pending"
+STATUS_APPROVED = "approved"
+STATUS_REJECTED = "rejected"
 
 
 def _hash_password(password: str, salt: Optional[str] = None) -> Tuple[str, str]:
@@ -52,8 +68,50 @@ def _admin_credentials() -> Tuple[str, str]:
     except Exception:
         return (
             os.getenv("APP_USERNAME", "admin"),
-            os.getenv("APP_PASSWORD", "admin123"),
+            os.getenv("APP_PASSWORD", "admin@123/"),
         )
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def normalize_user_id(raw: str) -> Tuple[bool, str, str]:
+    """
+    Normalise signup/login identity to a @gitgeeks.com email.
+
+    Accepts:
+      - full email: name@gitgeeks.com
+      - local part: name  →  name@gitgeeks.com
+
+    Returns (ok, email_or_error, message).
+    """
+    value = (raw or "").strip().lower()
+    if not value:
+        return False, "", "Enter your GitGeeks work email."
+
+    if "@" in value:
+        if not value.endswith(f"@{ALLOWED_EMAIL_DOMAIN}"):
+            return (
+                False,
+                "",
+                f"Only @{ALLOWED_EMAIL_DOMAIN} emails can sign up or log in.",
+            )
+        if not _EMAIL_RE.match(value):
+            return False, "", "Enter a valid work email (example: name@gitgeeks.com)."
+        return True, value, ""
+
+    # Local part only — append company domain
+    if not _LOCAL_PART_RE.match(value):
+        return (
+            False,
+            "",
+            "User id must be 2–64 characters (letters, numbers, . _ -).",
+        )
+    email = f"{value}@{ALLOWED_EMAIL_DOMAIN}"
+    if not _EMAIL_RE.match(email):
+        return False, "", "Enter a valid work email local part."
+    return True, email, ""
 
 
 def _load_file_users() -> Dict[str, Dict[str, Any]]:
@@ -90,7 +148,9 @@ def _mongo_collection():
 
 
 def _get_user(username: str) -> Optional[Dict[str, Any]]:
-    key = username.strip().lower()
+    key = (username or "").strip().lower()
+    if not key:
+        return None
     col = _mongo_collection()
     if col is not None:
         try:
@@ -104,60 +164,116 @@ def _get_user(username: str) -> Optional[Dict[str, Any]]:
     return users.get(key)
 
 
+def _upsert_user(doc: Dict[str, Any]) -> Tuple[bool, str]:
+    key = str(doc.get("username") or "").strip().lower()
+    if not key:
+        return False, "Missing username."
+
+    col = _mongo_collection()
+    if col is not None:
+        try:
+            col.update_one({"username": key}, {"$set": dict(doc)}, upsert=True)
+            return True, ""
+        except Exception as exc:
+            logger.warning("Mongo upsert failed, trying file: %s", exc)
+
+    users = _load_file_users()
+    users[key] = dict(doc)
+    try:
+        _save_file_users(users)
+        return True, ""
+    except Exception as exc:
+        logger.error("Could not persist user: %s", exc)
+        return False, "Could not save account. Please try again."
+
+
+def _user_status(user: Dict[str, Any]) -> str:
+    """Legacy users without status are treated as approved."""
+    status = str(user.get("status") or "").strip().lower()
+    if not status:
+        return STATUS_APPROVED
+    return status
+
+
 def signup(username: str, password: str, confirm_password: str = "") -> Tuple[bool, str]:
-    """Create a new user account. Returns (ok, message)."""
-    username = (username or "").strip()
+    """
+    Submit a signup *request* for a @gitgeeks.com identity.
+
+    Account stays pending until an admin approves it.
+    """
+    ok, email, err = normalize_user_id(username)
+    if not ok:
+        return False, err
+
     password = password or ""
     confirm_password = confirm_password if confirm_password != "" else password
 
-    if not _USERNAME_RE.match(username):
-        return False, "Username must be 3-40 characters (letters, numbers, . _ -)."
     if len(password) < 6:
         return False, "Password must be at least 6 characters."
     if password != confirm_password:
         return False, "Passwords do not match."
 
     admin_user, _ = _admin_credentials()
-    if username.lower() == admin_user.lower():
+    if email == admin_user.strip().lower() or email.split("@")[0] == admin_user.strip().lower():
         return False, "This username is reserved. Choose another."
 
-    if _get_user(username):
+    existing = _get_user(email)
+    if existing:
+        st = _user_status(existing)
+        if st == STATUS_PENDING:
+            return (
+                False,
+                "A signup request for this email is already pending admin approval.",
+            )
+        if st == STATUS_APPROVED:
+            return False, "Account already exists. Please log in instead."
+        if st == STATUS_REJECTED:
+            return (
+                False,
+                "This signup was rejected. Contact admin if you need access.",
+            )
         return False, "Username already exists. Please log in instead."
 
     password_hash, salt = _hash_password(password)
+    local = email.split("@")[0]
     doc = {
-        "username": username.lower(),
-        "display_name": username,
+        "username": email,
+        "email": email,
+        "display_name": local,
         "password_hash": password_hash,
         "salt": salt,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "status": STATUS_PENDING,
+        "role": "user",
+        "created_at": _now_iso(),
+        "updated_at": _now_iso(),
     }
 
-    col = _mongo_collection()
-    if col is not None:
-        try:
-            col.insert_one(dict(doc))
-            return True, "Account created. You can log in now."
-        except Exception as exc:
-            # Duplicate key or transient — fall through to file
-            logger.warning("Mongo signup failed, trying file: %s", exc)
+    saved, save_err = _upsert_user(doc)
+    if not saved:
+        return False, save_err or "Could not save signup request."
 
-    users = _load_file_users()
-    if username.lower() in users:
-        return False, "Username already exists. Please log in instead."
-    users[username.lower()] = doc
-    try:
-        _save_file_users(users)
-    except Exception as exc:
-        logger.error("Could not persist signup: %s", exc)
-        return False, "Could not save account. Please try again."
-    return True, "Account created. You can log in now."
+    return (
+        True,
+        "Signup request submitted. An admin must approve your @"
+        f"{ALLOWED_EMAIL_DOMAIN} account before you can log in.",
+    )
 
 
 def is_admin(username: str) -> bool:
     """True only for the bootstrap admin account (APP_USERNAME)."""
     admin_user, _ = _admin_credentials()
-    return bool(username) and username.strip().lower() == admin_user.strip().lower()
+    raw = (username or "").strip().lower()
+    if not raw:
+        return False
+    admin_l = admin_user.strip().lower()
+    if raw == admin_l:
+        return True
+    # Allow admin@gitgeeks.com if APP_USERNAME is the local part (or vice versa)
+    if "@" not in admin_l and raw == f"{admin_l}@{ALLOWED_EMAIL_DOMAIN}":
+        return True
+    if "@" in admin_l and raw == admin_l.split("@")[0]:
+        return True
+    return False
 
 
 def login(username: str, password: str) -> Tuple[bool, str]:
@@ -165,23 +281,159 @@ def login(username: str, password: str) -> Tuple[bool, str]:
     Authenticate a user.
 
     Accepts:
-      - bootstrap admin from APP_USERNAME / APP_PASSWORD
-      - registered users from MongoDB / local file
+      - bootstrap admin from APP_USERNAME / APP_PASSWORD (always)
+      - approved @gitgeeks.com users from MongoDB / local file
     """
-    username = (username or "").strip()
+    username_raw = (username or "").strip()
     password = password or ""
-    if not username or not password:
-        return False, "Enter username and password."
+    if not username_raw or not password:
+        return False, "Enter work email and password."
 
     admin_user, admin_pass = _admin_credentials()
-    if username.lower() == admin_user.strip().lower() and password == admin_pass:
-        return True, admin_user.strip()
+    admin_l = admin_user.strip().lower()
+    candidate = username_raw.lower()
+    # Bootstrap admin may still use plain APP_USERNAME (not necessarily email)
+    if candidate == admin_l or (
+        "@" not in admin_l and candidate == f"{admin_l}@{ALLOWED_EMAIL_DOMAIN}"
+    ):
+        if password == admin_pass:
+            return True, admin_user.strip()
 
-    user = _get_user(username)
+    ok, email, err = normalize_user_id(username_raw)
+    if not ok:
+        # Non-email bootstrap already handled; otherwise domain error
+        return False, err or "Invalid username or password."
+
+    user = _get_user(email)
     if not user:
         return False, "Invalid username or password."
 
-    if _verify_password(password, user.get("password_hash", ""), user.get("salt", "")):
-        return True, user.get("display_name") or username
+    if not _verify_password(password, user.get("password_hash", ""), user.get("salt", "")):
+        return False, "Invalid username or password."
 
-    return False, "Invalid username or password."
+    status = _user_status(user)
+    if status == STATUS_PENDING:
+        return (
+            False,
+            "Your signup is pending admin approval. You cannot log in yet.",
+        )
+    if status == STATUS_REJECTED:
+        return (
+            False,
+            "Your signup was rejected. Contact admin if you need access.",
+        )
+    if status != STATUS_APPROVED:
+        return False, "Account is not active. Contact admin."
+
+    return True, user.get("display_name") or email
+
+
+def list_users(status: Optional[str] = None) -> List[Dict[str, Any]]:
+    """List users (file + mongo merge). Optionally filter by status."""
+    by_key: Dict[str, Dict[str, Any]] = {}
+
+    for key, doc in _load_file_users().items():
+        if isinstance(doc, dict):
+            row = dict(doc)
+            row["username"] = row.get("username") or key
+            by_key[str(row["username"]).lower()] = row
+
+    col = _mongo_collection()
+    if col is not None:
+        try:
+            for doc in col.find({}, {"_id": 0}):
+                if not isinstance(doc, dict):
+                    continue
+                key = str(doc.get("username") or "").lower()
+                if key:
+                    by_key[key] = dict(doc)
+        except Exception as exc:
+            logger.warning("Mongo list_users failed: %s", exc)
+
+    rows = list(by_key.values())
+    for row in rows:
+        row["status"] = _user_status(row)
+
+    if status:
+        want = status.strip().lower()
+        rows = [r for r in rows if r.get("status") == want]
+
+    rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+    return rows
+
+
+def list_pending_signups() -> List[Dict[str, Any]]:
+    return list_users(status=STATUS_PENDING)
+
+
+def set_user_status(username: str, status: str, actor: str = "") -> Tuple[bool, str]:
+    """Approve or reject a signup request."""
+    status = (status or "").strip().lower()
+    if status not in (STATUS_APPROVED, STATUS_REJECTED, STATUS_PENDING):
+        return False, "Invalid status."
+
+    ok, email, err = normalize_user_id(username)
+    # Pending records should already be emails; also allow raw key lookup
+    key = email if ok else (username or "").strip().lower()
+    if not key:
+        return False, err or "Missing user id."
+
+    user = _get_user(key)
+    if not user:
+        return False, "User not found."
+
+    user = dict(user)
+    user["status"] = status
+    user["updated_at"] = _now_iso()
+    if actor:
+        user["reviewed_by"] = actor.strip().lower()
+        user["reviewed_at"] = _now_iso()
+
+    saved, save_err = _upsert_user(user)
+    if not saved:
+        return False, save_err or "Could not update user."
+
+    if status == STATUS_APPROVED:
+        return True, f"Approved {key}. They can log in now."
+    if status == STATUS_REJECTED:
+        return True, f"Rejected {key}."
+    return True, f"Updated {key} → {status}."
+
+
+def approve_user(username: str, actor: str = "") -> Tuple[bool, str]:
+    return set_user_status(username, STATUS_APPROVED, actor=actor)
+
+
+def reject_user(username: str, actor: str = "") -> Tuple[bool, str]:
+    return set_user_status(username, STATUS_REJECTED, actor=actor)
+
+
+def allowed_email_domain() -> str:
+    return ALLOWED_EMAIL_DOMAIN
+
+
+def person_label(username_or_email: str) -> str:
+    """
+    Human-friendly person name for admin monitoring.
+
+    Prefer stored display_name; else derive from email local part
+    (rishav.patel@gitgeeks.com → Rishav Patel).
+    """
+    key = (username_or_email or "").strip().lower()
+    if not key:
+        return "Unknown"
+
+    user = _get_user(key)
+    stored = ""
+    if user:
+        stored = str(user.get("display_name") or "").strip()
+        if not stored:
+            stored = str(user.get("email") or user.get("username") or "").strip()
+
+    raw = stored or key
+    if "@" in raw:
+        raw = raw.split("@", 1)[0]
+    parts = [p for p in raw.replace("_", " ").replace(".", " ").split() if p]
+    if not parts:
+        return key
+    return " ".join(p[:1].upper() + p[1:] for p in parts)
