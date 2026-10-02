@@ -245,11 +245,49 @@ class ResearchService:
             or "news" in str((d.metadata or {}).get("provider") or "").lower()
         ]
         incidents = self._extract_news_incidents(incident_pool, query=query)
+
+        # Soft fidelity pass: prefer on-brief evidence without emptying the pack.
+        try:
+            from services.fidelity_gate import BriefLock, evidence_is_on_brief
+
+            lock = BriefLock.from_dict(
+                (brand_context or {}).get("brief_lock") or {}
+            )
+            if not lock.topic:
+                lock.topic = query or ""
+            filtered_stats = [
+                s for s in statistics if evidence_is_on_brief(str(s), lock)
+            ]
+            if len(filtered_stats) >= 2:
+                statistics = filtered_stats
+            filtered_inc = [
+                i for i in incidents if evidence_is_on_brief(str(i), lock)
+            ]
+            if filtered_inc:
+                incidents = filtered_inc
+        except Exception:
+            pass
+
         # Surface top incidents inside statistics so older prompt paths still see them.
         for inc in incidents[:6]:
             tag = f"NEWS CASE: {inc}"
             if tag not in statistics:
                 statistics.insert(0, tag)
+
+        # Generic evidence ledger (all brands) — claim pack for Writer + Review
+        evidence_ledger: List[Dict] = []
+        try:
+            from services.evidence_ledger import build_evidence_ledger
+
+            evidence_ledger = build_evidence_ledger(
+                documents=all_docs,
+                sources=unique_sources,
+                statistics=statistics[:16],
+                incidents=incidents,
+                brief_lock=(brand_context or {}).get("brief_lock"),
+            )
+        except Exception as exc:
+            logger.warning("Evidence ledger build failed (non-fatal): %s", exc)
 
         research_data = ResearchData(
             documents=all_docs,
@@ -258,15 +296,18 @@ class ResearchService:
             statistics=statistics[:16],
             citations=citations,
             incidents=incidents,
+            evidence_ledger=evidence_ledger,
         )
 
         logger.info(
-            "Research complete | query='%s' | documents=%d | sources=%d | stats=%d | incidents=%d",
+            "Research complete | query='%s' | documents=%d | sources=%d | "
+            "stats=%d | incidents=%d | ledger=%d",
             query,
             len(all_docs),
             len(unique_sources),
             len(statistics),
             len(incidents),
+            len(evidence_ledger),
         )
 
         return research_data.to_state_dict()
@@ -349,34 +390,33 @@ class ResearchService:
             year_span = "2020 OR 2021 OR 2022 OR 2023 OR 2024 OR 2025 OR 2026"
 
         india = "India" if re.search(r"\b(india|indian)\b", core, re.I) else ""
-        # Topic cores for childcare abuse briefs (nanny/nannies/ayah/creche…)
-        if re.search(
-            r"\b(nann(?:y|ies)|babysitters?|caregivers?|ayahs?|"
-            r"creche|crèche|day\s*care|daycare)\b",
+        # Geo from the brief only (never a fixed city list)
+        geo_hits = re.findall(
+            r"\b("
+            r"Delhi|NCR|Gurgaon|Gurugram|Mumbai|Bengaluru|Bangalore|Hyderabad|"
+            r"Chennai|Pune|Kolkata|London|UK|USA|US|California"
+            r")\b",
             core,
             re.I,
-        ):
-            bases = [
-                f"nanny abuse children {india} {year_span}".strip(),
-                f"nannies booked child abuse {india} toddlers OR kids".strip(),
-                f"creche OR daycare abuse nanny {india} Bengaluru OR Mumbai OR Delhi OR Hyderabad".strip(),
-                f"domestic help OR maid OR ayah child abuse case {india} police".strip(),
-                f"Capgemini creche OR Bengaluru daycare toddler abuse {india}".strip(),
-            ]
-        else:
-            # Keep incident queries short — long blog prompts hurt News RSS recall
-            short = re.sub(
-                r"\b(write|an|article|about|the|should|have|add|angle|how|can|"
-                r"help|avoid|such|incidents?|between)\b",
-                " ",
-                core,
-                flags=re.I,
-            )
-            short = re.sub(r"\s{2,}", " ", short).strip()[:140] or core[:140]
-            bases = [
-                f"{short} news cases {year_span}".strip(),
-                f"{short} police booked OR arrested {india}".strip(),
-            ]
+        )
+        geo_bit = " OR ".join(dict.fromkeys(geo_hits)) if geo_hits else ""
+
+        # Keep incident queries short — long blog prompts hurt News RSS recall
+        short = re.sub(
+            r"\b(write|an|article|about|the|should|have|add|angle|how|can|"
+            r"help|avoid|such|incidents?|between|using|for|with)\b",
+            " ",
+            core,
+            flags=re.I,
+        )
+        short = re.sub(r"\s{2,}", " ", short).strip()[:140] or core[:140]
+        bases = [
+            f"{short} news cases OR reported {year_span}".strip(),
+            f"{short} police booked OR arrested {india} {geo_bit}".strip(),
+            f"{short} abuse OR assault case {india} {year_span}".strip()
+            if re.search(r"\b(abus\w*|assault|caregiver|nann|child|creche|daycare)\b", core, re.I)
+            else "",
+        ]
 
         out: List[str] = []
         seen = set()
@@ -598,6 +638,19 @@ class ResearchService:
         if not primary:
             return []
 
+        # Generic fidelity: nudge search toward brief markets/tokens (all brands).
+        try:
+            from services.fidelity_gate import BriefLock, research_query_constraints
+
+            lock = BriefLock.from_dict(
+                (brand_context or {}).get("brief_lock") or {}
+            )
+            hint = research_query_constraints(lock)
+            if hint and hint.lower() not in primary.lower():
+                primary = f"{primary} {hint}".strip()[:500]
+        except Exception:
+            pass
+
         core = primary.split("|")[0].strip()
         # Strip site operators for alternate queries (cleaner for news/stats).
         core_clean = re.sub(
@@ -612,21 +665,38 @@ class ResearchService:
         years = re.findall(r"\b(20[12]\d)\b", core_clean)
         year_bit = " OR ".join(sorted(set(years))[:4]) if years else "2023 OR 2024 OR 2025"
 
+        # Generic fidelity fan-out: how-to / news / stats queries from BriefLock
+        try:
+            from services.fidelity_gate import BriefLock, plan_research_queries
+
+            lock = BriefLock.from_dict(
+                (brand_context or {}).get("brief_lock") or {}
+            )
+            if not lock.topic:
+                lock.topic = query or core_clean
+            for fq in plan_research_queries(lock, query=query or core_clean):
+                if fq.lower().strip() not in {q.lower().strip() for q in queries}:
+                    queries.append(fq[:500])
+        except Exception:
+            pass
+
         # For case/incident briefs, prefer news/cases query over dry "survey/report"
         if self._wants_news_incidents(query):
-            queries.append(
-                f"{core_clean} news cases OR police OR booked ({year_bit})"
-            )
+            news_q = f"{core_clean} news cases OR police OR booked ({year_bit})"
+            if news_q.lower() not in {q.lower() for q in queries}:
+                queries.append(news_q)
         elif not re.search(
             r"\b(statistics?|survey|report|benchmark|market\s+size)\b",
             core_clean,
             re.I,
         ):
-            queries.append(
-                f"{core_clean} statistics OR survey OR report ({year_bit})"
-            )
+            stats_q = f"{core_clean} statistics OR survey OR report ({year_bit})"
+            if stats_q.lower() not in {q.lower() for q in queries}:
+                queries.append(stats_q)
         else:
-            queries.append(f"{core_clean} {year_bit}")
+            year_q = f"{core_clean} {year_bit}"
+            if year_q.lower() not in {q.lower() for q in queries}:
+                queries.append(year_q)
 
         # Geography-neutral data query if user named a market
         if re.search(r"\b(india|indian|usa|u\.s\.|uk|britain)\b", core_clean, re.I):
@@ -637,6 +707,14 @@ class ResearchService:
             if geo_q not in queries:
                 queries.append(geo_q[:500])
 
+        # Brand-domain boost: one extra query aligned to brand expertise,
+        # without forcing geography the user did not ask for.
+        brand_q = self._brand_domain_query(core_clean, brand_context)
+        if brand_q and brand_q.lower().strip() not in {
+            q.lower().strip() for q in queries
+        }:
+            queries.append(brand_q[:500])
+
         # Deduplicate while preserving order
         seen = set()
         out: List[str] = []
@@ -645,9 +723,48 @@ class ResearchService:
             if key and key not in seen:
                 seen.add(key)
                 out.append(q[:500])
-            if len(out) >= 3:
+            if len(out) >= 5:
                 break
         return out
+
+    @staticmethod
+    def _brand_domain_query(core_clean: str, brand_context: Dict) -> str:
+        """
+        Soft brand-aware research hint from brand config (not a Python brand map).
+
+        Uses keyword_direction / pain_points / optional research_domain_hint from
+        brand_context so new brands stay generic. Returns "" when the brief
+        already covers the domain or no config keywords exist.
+        """
+        brand = brand_context if isinstance(brand_context, dict) else {}
+        explicit = str(brand.get("research_domain_hint") or "").strip()
+        parts: List[str] = []
+        if explicit:
+            parts.append(explicit)
+        for key in ("keyword_direction", "pain_points"):
+            raw = brand.get(key) or []
+            if isinstance(raw, str):
+                raw = [raw]
+            for item in raw:
+                s = str(item or "").strip()
+                if s and s.lower() not in {p.lower() for p in parts}:
+                    parts.append(s)
+                if len(parts) >= 4:
+                    break
+            if len(parts) >= 4:
+                break
+        hint = " OR ".join(parts[:4])
+        if not hint or not (core_clean or "").strip():
+            return ""
+        # Skip if the brief already includes several brand-domain tokens
+        hint_tokens = {
+            t for t in re.findall(r"[a-z0-9]{4,}", hint.lower()) if t not in {"with", "from"}
+        }
+        core_l = core_clean.lower()
+        overlap = sum(1 for t in hint_tokens if t in core_l)
+        if overlap >= 2:
+            return ""
+        return f"{core_clean} {hint} -site:reddit.com -site:facebook.com"
 
     def _dedupe_documents(
         self,
@@ -873,8 +990,9 @@ class ResearchService:
         """
         Bias search toward geography named in the USER query only.
         Brand never forces a market (Kinvo/MPM do not imply India).
+        brand_context is reserved for namespace logging / future filters only.
         """
-        del brand_context  # Reserved for future brand filters; geo is user-driven.
+        _ = brand_context
         q = (query or "").strip()
         if not q:
             return q
@@ -924,10 +1042,22 @@ class ResearchService:
                 search_core,
                 re.I,
             ):
-                search_core = (
-                    f"{search_core} NRI property fraud OR cyber fraud India "
-                    f"statistics -site:reddit.com -site:facebook.com"
-                )
+                # Property fraud briefs only — do NOT inject cyber fraud into
+                # ordinary NRI rental / yield / management articles.
+                if re.search(
+                    r"\b(fraud|scam|cyber)\b",
+                    search_core,
+                    re.I,
+                ):
+                    search_core = (
+                        f"{search_core} NRI property fraud OR real estate scam India "
+                        f"statistics -site:reddit.com -site:facebook.com"
+                    )
+                else:
+                    search_core = (
+                        f"{search_core} NRI property India "
+                        f"-site:reddit.com -site:facebook.com"
+                    )
             elif not re.search(r"\bsite:", search_core, re.I):
                 # Geo already applied above — only add noise filters here.
                 search_core = (
@@ -1497,7 +1627,28 @@ class ResearchService:
                 for match in re.finditer(pattern, text, re.IGNORECASE):
                     start = max(match.start() - 100, 0)
                     end = min(match.end() + 140, len(text))
+                    # Never start mid-word / mid-sentence (avoids "o a gap…" labels)
+                    if start > 0:
+                        # Prefer sentence boundary
+                        window = text[start:match.start()]
+                        for sep in (". ", "? ", "! ", "\n"):
+                            idx = window.rfind(sep)
+                            if idx >= 0:
+                                start = start + idx + len(sep)
+                                break
+                        else:
+                            # Fall back to first whitespace so we don't clip a word
+                            m_ws = re.search(r"\s", text[start:match.start()])
+                            if m_ws:
+                                start = start + m_ws.start() + 1
                     snippet = text[start:end].strip()
+                    # Drop leading fragments like "o a gap" / dangling punctuation
+                    snippet = re.sub(r"^[^A-Za-z0-9\"'(]+", "", snippet)
+                    snippet = re.sub(
+                        r"^(?:[a-z]{1,2}\s+){1,3}(?=[a-z])",
+                        "",
+                        snippet,
+                    ).strip()
                     # Drop ultra-short / likely false-positive numeric crumbs
                     if len(snippet) < 28:
                         continue
