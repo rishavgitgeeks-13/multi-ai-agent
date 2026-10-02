@@ -86,13 +86,26 @@ def expand_contractions(text: str) -> str:
     Brand style: published copy should read naturally without
     you're / it's / I'd apostrophe contractions.
     Possessives like "family's" are left alone.
+    Source / reference footers are left unchanged so titles like
+    "Don't Rush, Verify First" are not mangled.
     """
     if not text:
         return text
-    out = text
+
+    # Do not rewrite citation titles in the Sources footer
+    split = re.split(
+        r"(?=\n(?:##\s+)?Sources\b|\n(?:##\s+)?References\b)",
+        text,
+        maxsplit=1,
+        flags=re.I,
+    )
+    body = split[0]
+    footer = split[1] if len(split) > 1 else ""
+
+    out = body
     for pattern, repl in _CONTRACTIONS:
         out = re.sub(pattern, repl, out, flags=re.IGNORECASE)
-    return out
+    return out + footer
 
 
 def strip_all_dashes(text: str) -> str:
@@ -165,3 +178,115 @@ def strip_all_dashes(text: str) -> str:
         masked = masked.replace(f"__URL_PLACEHOLDER_{i}__", url)
 
     return masked.strip()
+
+
+# Phrase → plain rewrite. Order matters (longer / more specific first).
+_AI_CLICHE_REPLACEMENTS: list[tuple[str, str]] = [
+    (r"(?i)\bnot only\b(.{0,100}?)\bbut also\b", r"\1, and"),
+    (r"(?i)\bfuture[- ]ready\b", "prepared for what comes next"),
+    (r"(?i)\bworkforce of the future\b", "teams that can adapt"),
+    (r"(?i)\bdigital transformation journey\b", "shift to better systems"),
+    (r"(?i)\bend[- ]to[- ]end solution\b", "complete setup"),
+    (r"(?i)\bbest[- ]in[- ]class\b", "strong"),
+    (r"(?i)\bstay ahead of the curve\b", "stay competitive"),
+    (r"(?i)\bthe numbers are hard to ignore\b", "the numbers matter"),
+    (r"(?i)\bthe payoff is clear\b", "the benefit shows up in the work"),
+    (r"(?i)\bwhat matters now\b", "what to do next"),
+    (r"(?i)\bchanges the game\b", "changes how the work runs"),
+    (r"(?i)\bchange the game\b", "change how the work runs"),
+    (r"(?i)\bunlock growth\b", "grow with less waste"),
+    (r"(?i)\bdrive growth\b", "grow"),
+    (r"(?i)\bscale without\b", "grow without"),
+    (r"(?i)\bcompetitive advantage\b", "an edge"),
+    (r"(?i)\bin today'?s market\b", "right now"),
+    (r"(?i)\bholistic approach\b", "full approach"),
+    (r"(?i)\bseamless integration\b", "smooth handoff"),
+    (r"(?i)\bworld[- ]class\b", "high quality"),
+    (r"(?i)\bcutting[- ]edge\b", "modern"),
+    (r"(?i)\bgame[- ]changer\b", "real shift"),
+    (r"(?i)\bgame changer\b", "real shift"),
+    (r"(?i)\bleverage ai\b", "use AI"),
+    (r"(?i)\bharness the power\b", "use"),
+    (r"(?i)\bunlock the power\b", "get more from"),
+    (r"(?i)\bMoreover,\s*", ""),
+    (r"(?i)\bFurthermore,\s*", ""),
+    (r"(?i)\bAdditionally,\s*", ""),
+    (r"(?i)\bIn conclusion,\s*", ""),
+    (r"(?i)\bIn summary,\s*", ""),
+    (r"(?i)\bTo sum up,\s*", ""),
+    (r"(?i)\bIt'?s worth noting that\s*", ""),
+    (r"(?i)\bIt is worth noting that\s*", ""),
+    (r"(?i)\bIt'?s important to note that\s*", ""),
+    (r"(?i)\bIt is important to note that\s*", ""),
+    (r"(?i)\bIn today'?s fast-paced world,?\s*", ""),
+    (r"(?i)\bIn today'?s digital age,?\s*", ""),
+    (r"(?i)\bIn the ever[- ]evolving\s+\w+,?\s*", ""),
+    (r"(?i)\bIn the landscape of\s+", "In "),
+    (r"(?i)\bIn the realm of\s+", "In "),
+    (r"(?i)\bWhen it comes to\s+", "For "),
+    (r"(?i)\bAt the end of the day,?\s*", ""),
+    (r"(?i)\bNeedless to say,?\s*", ""),
+    (r"(?i)\bWithout further ado,?\s*", ""),
+    (r"(?i)\bThis article explores\b", "Here is a clear look at"),
+    (r"(?i)\bIn this article,?\s+we will\b", "We will"),
+    (r"(?i)\bLet us examine\b", "Look at"),
+    (r"(?i)\bAs we delve into\b", "On"),
+    (r"(?i)\bdelve into\b", "look at"),
+    (r"(?i)\ba testament to\b", "proof of"),
+    (r"(?i)\bplays a (?:crucial|vital|pivotal) role\b", "matters"),
+    (r"(?i)\bleverage\b", "use"),
+    (r"(?i)\brobust\b", "strong"),
+    (r"(?i)\bseamless\b", "smooth"),
+    (r"(?i)\bholistic\b", "full"),
+    (r"(?i)\bnavigating the\b", "working through"),
+    (r"(?i)\belevate your\b", "improve your"),
+    (r"(?i)\bin essence,?\s*", ""),
+    (r"(?i)\bultimately,?\s*", ""),
+    (r"(?i)\brest assured,?\s*", ""),
+    (r"(?i)\blook no further\.?\s*", ""),
+    (r"(?i)\bthe key takeaway\b", "the point"),
+    (r"(?i)\bever[- ]changing landscape\b", "shifting market"),
+    (r"(?i)\bin the fast[- ]paced\b", "in the busy"),
+]
+
+
+def scrub_ai_cliches(text: str) -> str:
+    """
+    Deterministic removal/rewrite of AI / soft-B2B stock phrases.
+
+    Shared by Writer packaging and Final Editor so flagged phrases
+    do not survive into the published article.
+    Leaves ## Sources / References footers untouched.
+    """
+    if not text:
+        return text
+
+    split = re.split(
+        r"(?=\n(?:##\s+)?Sources\b|\n(?:##\s+)?References\b|\nHashtags:)",
+        text,
+        maxsplit=1,
+        flags=re.I,
+    )
+    body = split[0]
+    footer = split[1] if len(split) > 1 else ""
+
+    out = body
+    for pattern, repl in _AI_CLICHE_REPLACEMENTS:
+        out = re.sub(pattern, repl, out)
+
+    # Clean doubled spaces / empty sentences left by removals
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    out = re.sub(r" +([,.;:!?])", r"\1", out)
+    # Re-capitalize sentence starts after phrase swaps
+    out = re.sub(
+        r"([.!?]\s+)([a-z])",
+        lambda m: m.group(1) + m.group(2).upper(),
+        out,
+    )
+    out = re.sub(
+        r"(^|\n)([a-z])",
+        lambda m: m.group(1) + m.group(2).upper(),
+        out,
+    )
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return (out.strip() + ("\n\n" + footer.lstrip("\n") if footer else "")).strip()
