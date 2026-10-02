@@ -20,6 +20,73 @@ import re
 
 import yaml
 
+# Single-token aliases that are too generic alone (need a corroborating signal).
+_WEAK_ALIASES = frozenset(
+    {
+        "property",
+        "nanny",
+        "telecom",
+        "wireless",
+        "5g",
+        "mergers",
+        "acquisitions",
+    }
+)
+
+# Extra domain tokens that can corroborate a weak alias (namespace → tokens).
+_DOMAIN_CORROBORATION = {
+    "mpm": frozenset(
+        {
+            "nri",
+            "gurgaon",
+            "gurugram",
+            "rera",
+            "rental",
+            "yield",
+            "flat",
+            "apartment",
+            "realty",
+            "landlord",
+        }
+    ),
+    "kinvo": frozenset(
+        {
+            "dbs",
+            "caregiver",
+            "childcare",
+            "babysit",
+            "infant",
+            "toddler",
+            "japa",
+            "newborn",
+            "parenting",
+            "nannies",
+        }
+    ),
+    "gcb": frozenset(
+        {
+            "infrastructure",
+            "deployment",
+            "network",
+            "operator",
+            "tower",
+            "ran",
+            "fiber",
+            "fibre",
+        }
+    ),
+    "gtib": frozenset(
+        {
+            "founder",
+            "exit",
+            "sellside",
+            "advisory",
+            "acquisition",
+            "divestiture",
+        }
+    ),
+}
+
 
 class BusinessContextService:
     """Resolves the business context for a user request."""
@@ -34,6 +101,90 @@ class BusinessContextService:
 
         with open(config_path, "r", encoding="utf-8") as file:
             self.brand_configs = yaml.safe_load(file)["brands"]
+
+    @staticmethod
+    def _alias_in_text(alias: str, text: str) -> bool:
+        """Whole-phrase match so short tokens do not collide inside other words."""
+        a = (alias or "").strip().lower()
+        if not a or not text:
+            return False
+        pattern = r"(?<!\w)" + re.escape(a) + r"(?!\w)"
+        return bool(re.search(pattern, text, flags=re.I))
+
+    def _brand_match_score(self, cfg: Dict, text_lower: str) -> int:
+        """
+        Score how well a brand fits the prompt.
+
+        Strong (multi-word / brand-named) aliases outweigh weak single tokens.
+        Weak aliases alone require a second signal from the same brand.
+        """
+        if not text_lower:
+            return 0
+
+        strong_hits = 0
+        weak_hits = 0
+        best_len = 0
+        weak_matched: set = set()
+
+        for alias in cfg.get("aliases", []) or []:
+            a = str(alias).lower().strip()
+            if not a or not self._alias_in_text(a, text_lower):
+                continue
+            best_len = max(best_len, len(a))
+            if a in _WEAK_ALIASES or (len(a) <= 3 and " " not in a):
+                weak_hits += 1
+                weak_matched.add(a)
+            else:
+                strong_hits += 1
+
+        namespace = str(cfg.get("namespace") or "").lower()
+        display = str(cfg.get("display_name") or "").lower()
+        name_hit = False
+        if namespace and self._alias_in_text(namespace, text_lower):
+            name_hit = True
+            strong_hits += 1
+            best_len = max(best_len, len(namespace))
+        # display_name may be "Kinvo Care" — match leading brand token
+        display_token = display.split("/")[0].split()[0] if display else ""
+        if display_token and len(display_token) >= 3 and self._alias_in_text(
+            display_token, text_lower
+        ):
+            name_hit = True
+            strong_hits += 1
+
+        # Corroboration for weak-only matches (pain points / keyword direction).
+        # Do not count the same weak alias token as its own corroboration
+        # (e.g. "property tax" must not match MPM via keyword "NRI Property…").
+        corroboration = 0
+        if weak_hits and not strong_hits and not name_hit:
+            blocked = set(weak_matched) | set(_WEAK_ALIASES)
+            for phrase in list(cfg.get("keyword_direction") or []) + list(
+                cfg.get("pain_points") or []
+            ):
+                p = str(phrase).lower().strip()
+                if len(p) < 4:
+                    continue
+                tokens = [
+                    t
+                    for t in re.findall(r"[a-z0-9]{4,}", p)
+                    if t not in blocked
+                    and t not in {"with", "from", "that", "this", "service"}
+                ]
+                if sum(1 for t in tokens if t in text_lower) >= 1:
+                    corroboration += 1
+            ns = str(cfg.get("namespace") or "").lower()
+            for tok in _DOMAIN_CORROBORATION.get(ns, ()):
+                if tok not in blocked and self._alias_in_text(tok, text_lower):
+                    corroboration += 1
+            if corroboration == 0:
+                return 0
+
+        if strong_hits == 0 and weak_hits == 0:
+            return 0
+
+        return (strong_hits * 100) + (weak_hits * 10) + best_len + (
+            corroboration * 5
+        )
 
     def _detect_workflow(
         self,
@@ -214,6 +365,20 @@ class BusinessContextService:
             context.setdefault("seo_kit_selected", {})
         return context
 
+    def _cfg_matches_brand_label(self, cfg: Dict, brand: str) -> bool:
+        brand = (brand or "").lower().strip()
+        if not brand:
+            return False
+        aliases = [alias.lower() for alias in cfg.get("aliases", [])]
+        namespace = str(cfg.get("namespace", "")).lower()
+        display_name = str(cfg.get("display_name", "")).lower()
+        return (
+            brand == namespace
+            or brand == display_name
+            or brand in aliases
+            or brand in display_name
+        )
+
     def resolve(
         self,
         user_input: str = "",
@@ -225,7 +390,7 @@ class BusinessContextService:
         Priority:
         1. Explicit brand selected from UI/API.
         2. `[Brand: …]` hint embedded in the user prompt.
-        3. Auto-detect from user prompt (longest alias wins — avoids weak collisions).
+        3. Auto-detect from user prompt (strongest scored match).
         4. Default fallback.
         """
 
@@ -233,34 +398,10 @@ class BusinessContextService:
         # Explicit brand selection
         # --------------------------------------------------
         if brand:
-            brand = brand.lower().strip()
-
+            brand_l = brand.lower().strip()
             for cfg in self.brand_configs.values():
-                aliases = [
-                    alias.lower()
-                    for alias in cfg.get("aliases", [])
-                ]
-
-                namespace = (
-                    cfg.get("namespace", "")
-                    .lower()
-                )
-
-                display_name = (
-                    cfg.get("display_name", "")
-                    .lower()
-                )
-
-                if (
-                    brand == namespace
-                    or brand == display_name
-                    or brand in aliases
-                    or brand in display_name
-                ):
-                    return self._build_context(
-                        cfg,
-                        user_input,
-                    )
+                if self._cfg_matches_brand_label(cfg, brand_l):
+                    return self._build_context(cfg, user_input)
 
         text = (user_input or "").strip()
         text_lower = text.lower()
@@ -276,34 +417,21 @@ class BusinessContextService:
         if brand_hint:
             hinted = brand_hint.group(1).strip().lower()
             for cfg in self.brand_configs.values():
-                aliases = [a.lower() for a in cfg.get("aliases", [])]
-                namespace = str(cfg.get("namespace", "")).lower()
-                display_name = str(cfg.get("display_name", "")).lower()
-                if (
-                    hinted == namespace
-                    or hinted == display_name
-                    or hinted in aliases
-                    or hinted in display_name
-                ):
+                if self._cfg_matches_brand_label(cfg, hinted):
                     return self._build_context(cfg, user_input)
 
         # --------------------------------------------------
-        # Auto detect from prompt — longest matching alias wins
+        # Auto detect from prompt — highest match score wins
         # --------------------------------------------------
         best_cfg = None
-        best_len = 0
+        best_score = 0
         for cfg in self.brand_configs.values():
-            for alias in cfg.get("aliases", []):
-                alias_l = str(alias).lower().strip()
-                if not alias_l or alias_l not in text_lower:
-                    continue
-                # Prefer longer, more specific aliases (e.g. "network deployment"
-                # over a short token that collides across brands).
-                if len(alias_l) > best_len:
-                    best_cfg = cfg
-                    best_len = len(alias_l)
+            score = self._brand_match_score(cfg, text_lower)
+            if score > best_score:
+                best_cfg = cfg
+                best_score = score
 
-        if best_cfg is not None:
+        if best_cfg is not None and best_score > 0:
             return self._build_context(best_cfg, user_input)
 
         # --------------------------------------------------
