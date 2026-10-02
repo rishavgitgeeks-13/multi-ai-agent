@@ -297,3 +297,58 @@ def group_conversations_by_user(
     for who in groups:
         groups[who].sort(key=lambda c: str(c.get("created_at") or ""), reverse=True)
     return dict(sorted(groups.items(), key=lambda kv: kv[0]))
+
+
+def list_history_usernames() -> List[str]:
+    """All usernames that have at least one saved chat turn."""
+    names: set[str] = set()
+    col = _mongo_collection()
+    if col is not None:
+        try:
+            for value in col.distinct("username"):
+                key = str(value or "").strip().lower()
+                if key:
+                    names.add(key)
+        except Exception as exc:
+            logger.warning("Mongo list_history_usernames failed: %s", exc)
+
+    for key in _load_file().keys():
+        user = str(key or "").strip().lower()
+        if user:
+            names.add(user)
+    return sorted(names)
+
+
+def get_user_usage_summary(username: str) -> Dict[str, Any]:
+    """
+    Lightweight usage stats for admin monitoring.
+
+    Returns turn_count, conversation_count, last_activity (ISO), username.
+    """
+    user = (username or "").strip().lower()
+    empty = {
+        "username": user,
+        "turn_count": 0,
+        "conversation_count": 0,
+        "last_activity": "",
+    }
+    if not user:
+        return empty
+
+    turns = get_user_history(user, limit=500)
+    if not turns:
+        return empty
+
+    last_at = ""
+    for t in turns:
+        created = str((t or {}).get("created_at") or "")
+        if created > last_at:
+            last_at = created
+
+    conversations = turns_to_conversations(turns)
+    return {
+        "username": user,
+        "turn_count": len(turns),
+        "conversation_count": len(conversations),
+        "last_activity": last_at,
+    }
