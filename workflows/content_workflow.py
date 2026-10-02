@@ -73,6 +73,7 @@ class ContentWorkflow:
         additional_instructions: str = "",
         session_id: Optional[str] = None,
         max_revisions: Optional[int] = None,
+        content_mode: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run the long-form content workflow.
@@ -90,6 +91,8 @@ class ContentWorkflow:
         additional_instructions: Free-text modifier appended to writer prompts.
         session_id            : If provided, saves workflow turn to ConversationMemory.
         max_revisions         : Max review→writer cycles (default: settings.MAX_REVIEW_ITERATIONS).
+        content_mode          : Optional Quality OS mode override
+                                (awareness | authority | lead_gen | seo_page).
 
         Returns
         -------
@@ -120,6 +123,7 @@ class ContentWorkflow:
             language=language,
             additional_instructions=additional_instructions,
             max_revisions=max_revisions or settings.MAX_REVIEW_ITERATIONS,
+            content_mode=(content_mode or "").strip().lower(),
         )
 
         logger.info(
@@ -176,6 +180,7 @@ class ContentWorkflow:
         language: str,
         additional_instructions: str,
         max_revisions: int,
+        content_mode: str = "",
     ) -> Dict[str, Any]:
         return {
             # Identity
@@ -189,8 +194,11 @@ class ContentWorkflow:
             "objective": objective,
             "language": language,
             "additional_instructions": additional_instructions,
+            "content_mode": content_mode or "",
+            "mode_policy": {},
             # Safety / constraints — populated by Manager Agent
             "primary_topic": "",
+            "brief_lock": {},
             "user_constraints": {},
             "safety": {},
             # Business context — populated by Manager Agent
@@ -267,7 +275,12 @@ class ContentWorkflow:
                 "feedback": review.get("feedback", []),
                 "issues": review.get("issues", []),
                 "dimension_scores": review.get("dimension_scores", {}),
+                "below_target": bool(review.get("below_target")),
+                "quality_label": review.get("quality_label") or "",
+                "final_qc": review.get("final_qc") or {},
             },
+            "content_mode": state.get("content_mode") or "",
+            "mode_policy": state.get("mode_policy") or {},
             "revision_count": state.get("revision_count", 0),
             "metadata": state.get("metadata", {}),
             "final_output": state.get("final_output", {}),
