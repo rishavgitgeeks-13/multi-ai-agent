@@ -124,4 +124,41 @@ class Settings(BaseSettings):
     )
 
 
+def _apply_streamlit_secrets() -> None:
+    """
+    Streamlit Cloud has no .env file. Copy [secrets] into os.environ
+    so Mongo / auth / keys match local deployments.
+    """
+    try:
+        import os
+
+        import streamlit as st
+
+        secrets = getattr(st, "secrets", None)
+        if not secrets:
+            return
+        mapping = {
+            "MONGODB_URI": ("MONGODB_URI", "mongodb_uri", "mongo_uri"),
+            "MONGODB_DATABASE": ("MONGODB_DATABASE", "mongodb_database"),
+            "APP_USERNAME": ("APP_USERNAME", "app_username"),
+            "APP_PASSWORD": ("APP_PASSWORD", "app_password"),
+            "OPENAI_API_KEY": ("OPENAI_API_KEY", "openai_api_key"),
+            "TAVILY_API_KEY": ("TAVILY_API_KEY", "tavily_api_key"),
+        }
+        for env_key, aliases in mapping.items():
+            if os.getenv(env_key):
+                continue
+            for alias in aliases:
+                try:
+                    value = secrets.get(alias)
+                except Exception:
+                    value = None
+                if value:
+                    os.environ[env_key] = str(value)
+                    break
+    except Exception:
+        pass
+
+
+_apply_streamlit_secrets()
 settings = Settings()
