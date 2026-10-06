@@ -57,7 +57,7 @@ class AddTurnResponse(BaseModel):
 )
 async def get_user_chat_history(
     username: str,
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(500, ge=1, le=500),
 ) -> UserHistoryResponse:
     user = (username or "").strip()
     if len(user) < 2:
