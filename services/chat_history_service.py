@@ -124,29 +124,64 @@ def add_turn(
 
 
 def get_user_history(username: str, limit: int = 100) -> List[Dict[str, Any]]:
-    """Return oldest-first turns for one user."""
-    user = (username or "").strip().lower()
-    if not user:
+    """Return oldest-first turns for one user (merges email + local-part aliases)."""
+    aliases = _username_aliases(username)
+    if not aliases:
         return []
     cap = max(1, min(limit, 500))
+
+    collected: List[Dict[str, Any]] = []
+    seen_keys: set[str] = set()
+
+    def _absorb(docs: List[Dict[str, Any]]) -> None:
+        for t in docs or []:
+            if not isinstance(t, dict) or not t.get("content"):
+                continue
+            key = (
+                f"{t.get('created_at')}|{t.get('role')}|{str(t.get('content'))[:80]}"
+            )
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            collected.append(t)
+
     col = _mongo_collection()
     if col is not None:
         _migrate_file_to_mongo_if_empty(col)
         try:
             cursor = (
-                col.find({"username": user}, {"_id": 0})
+                col.find({"username": {"$in": aliases}}, {"_id": 0})
                 .sort("created_at", 1)
-                .limit(cap)
+                .limit(cap * 2)
             )
-            docs = list(cursor)
-            if docs:
-                return docs
-            # Mongo is empty for this user — fall through to file mirror
+            _absorb(list(cursor))
         except Exception as exc:
             logger.warning("Mongo get_user_history failed: %s", exc)
 
-    bucket = _load_file().get(user) or []
-    return bucket[-cap:]
+    data = _load_file()
+    for alias in aliases:
+        _absorb(data.get(alias) or [])
+
+    collected.sort(key=lambda t: str(t.get("created_at") or ""))
+    return collected[-cap:]
+
+
+def _username_aliases(username: str) -> List[str]:
+    """Match both name@domain and local-part history keys."""
+    raw = (username or "").strip().lower()
+    if not raw:
+        return []
+    out = [raw]
+    if "@" in raw:
+        local = raw.split("@", 1)[0]
+        if local and local not in out:
+            out.append(local)
+    else:
+        # Common company domain for this app
+        email = f"{raw}@gitgeeks.com"
+        if email not in out:
+            out.insert(0, email)
+    return out
 
 
 def get_all_recent_activity(limit: int = 100) -> List[Dict[str, Any]]:
@@ -323,7 +358,8 @@ def get_user_usage_summary(username: str) -> Dict[str, Any]:
     """
     Lightweight usage stats for admin monitoring.
 
-    Returns turn_count, conversation_count, last_activity (ISO), username.
+    Returns turn_count, conversation_count, last_activity (ISO), username,
+    plus last-7-day counts for weekly reporting.
     """
     user = (username or "").strip().lower()
     empty = {
@@ -331,6 +367,8 @@ def get_user_usage_summary(username: str) -> Dict[str, Any]:
         "turn_count": 0,
         "conversation_count": 0,
         "last_activity": "",
+        "week_turn_count": 0,
+        "week_conversation_count": 0,
     }
     if not user:
         return empty
@@ -346,9 +384,123 @@ def get_user_usage_summary(username: str) -> Dict[str, Any]:
             last_at = created
 
     conversations = turns_to_conversations(turns)
+    week_turns = _filter_turns_since(turns, days=7)
+    week_convs = turns_to_conversations(week_turns)
     return {
         "username": user,
         "turn_count": len(turns),
         "conversation_count": len(conversations),
         "last_activity": last_at,
+        "week_turn_count": len(week_turns),
+        "week_conversation_count": len(week_convs),
     }
+
+
+def _filter_turns_since(turns: List[Dict[str, Any]], days: int = 7) -> List[Dict[str, Any]]:
+    """Keep turns whose created_at is within the last N days (UTC)."""
+    from datetime import timedelta
+
+    if days <= 0:
+        return list(turns or [])
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff_iso = cutoff.isoformat()
+    out: List[Dict[str, Any]] = []
+    for t in turns or []:
+        created = str((t or {}).get("created_at") or "")
+        if not created:
+            continue
+        # Accept both Z and +00:00 style timestamps
+        norm = created.replace("Z", "+00:00")
+        try:
+            # Fast path: ISO string compare works when both are timezone-aware ISO
+            if norm >= cutoff_iso[:19]:
+                # Prefer parsed compare when possible
+                try:
+                    ts = datetime.fromisoformat(norm)
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    if ts >= cutoff:
+                        out.append(t)
+                    continue
+                except Exception:
+                    out.append(t)
+                    continue
+        except Exception:
+            continue
+        # Fallback string compare for sortable ISO prefixes
+        if created[:10] >= cutoff.date().isoformat():
+            out.append(t)
+    return out
+
+
+def build_portal_usage_report(days: int = 7) -> List[Dict[str, Any]]:
+    """
+    Admin weekly usage report across all known users.
+
+    Rows include signup roster + anyone with chat history.
+    Safe for CSV export.
+    """
+    days = max(1, min(int(days or 7), 90))
+    names: set[str] = set(list_history_usernames())
+    try:
+        from services.user_auth import list_users
+
+        for row in list_users() or []:
+            email = str(row.get("username") or row.get("email") or "").strip().lower()
+            if email:
+                names.add(email)
+    except Exception as exc:
+        logger.warning("usage report list_users failed: %s", exc)
+
+    rows: List[Dict[str, Any]] = []
+    for name in sorted(names):
+        turns = get_user_history(name, limit=500)
+        conversations = turns_to_conversations(turns)
+        period_turns = _filter_turns_since(turns, days=days)
+        period_convs = turns_to_conversations(period_turns)
+        last_at = ""
+        for t in turns:
+            created = str((t or {}).get("created_at") or "")
+            if created > last_at:
+                last_at = created
+        status = ""
+        try:
+            from services.user_auth import _get_user, _user_status
+
+            user = _get_user(name)
+            if user:
+                status = _user_status(user)
+        except Exception:
+            status = ""
+        rows.append(
+            {
+                "username": name,
+                "status": status or "active",
+                "conversations_all_time": len(conversations),
+                "turns_all_time": len(turns),
+                f"conversations_last_{days}d": len(period_convs),
+                f"turns_last_{days}d": len(period_turns),
+                "last_activity": last_at,
+            }
+        )
+    turn_key = f"turns_last_{days}d"
+    rows.sort(
+        key=lambda r: (int(r.get(turn_key) or 0), str(r.get("last_activity") or "")),
+        reverse=True,
+    )
+    return rows
+
+
+def usage_report_csv(days: int = 7) -> str:
+    """CSV text for weekly portal usage report."""
+    import csv
+    import io
+
+    rows = build_portal_usage_report(days=days)
+    if not rows:
+        return "username,status,conversations_all_time,turns_all_time,last_activity\n"
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=list(rows[0].keys()))
+    writer.writeheader()
+    writer.writerows(rows)
+    return buf.getvalue()
