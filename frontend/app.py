@@ -26,6 +26,14 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+# Streamlit Cloud: copy secrets into env before settings / Mongo load.
+try:
+    from config.settings import _apply_streamlit_secrets
+
+    _apply_streamlit_secrets()
+except Exception:
+    pass
+
 # ==========================================================================
 # Page config — must be first Streamlit call
 # ==========================================================================
@@ -59,8 +67,8 @@ if "main_view" not in st.session_state:
     st.session_state.main_view = "create"  # create | history
 if "is_admin" not in st.session_state:
     st.session_state.is_admin = False
-API_BASE_URL = "http://54.218.34.106:9000"
-#API_BASE_URL = "http://localhost:8000"
+#API_BASE_URL = "http://54.218.34.106:9000"
+API_BASE_URL = "http://localhost:8000"
 
 # Always point at the deployed API (do not let an old empty session value stick).
 st.session_state.api_url = API_BASE_URL
@@ -1548,11 +1556,15 @@ if not st.session_state.authenticated:
                 from services.user_auth import is_admin as auth_is_admin
                 from services.user_auth import normalize_user_id
 
-                # Prefer normalised email as session key when applicable
+                # Prefer canonical email from login (msg) so history keys stay stable
                 _ok_id, _email, _ = normalize_user_id(login_user or "")
-                user_key = (_email if _ok_id else (login_user or msg or "")).strip()
-                if auth_is_admin(login_user or ""):
-                    user_key = (login_user or msg or "").strip()
+                user_key = (msg or "").strip() or (
+                    _email if _ok_id else (login_user or "")
+                ).strip()
+                if auth_is_admin(login_user or "") or auth_is_admin(user_key):
+                    # Bootstrap admin may be plain "admin"
+                    if auth_is_admin(login_user or ""):
+                        user_key = (login_user or msg or "").strip()
                 st.session_state.authenticated = True
                 st.session_state.username = user_key
                 st.session_state.is_admin = auth_is_admin(user_key) or auth_is_admin(
@@ -1705,6 +1717,8 @@ def _render_approvals_panel(key_prefix: str = "top") -> None:
 
 def _render_team_panel(key_prefix: str = "side") -> None:
     """Team usage monitor — lives in the left sidebar for admin."""
+    load_error = ""
+    mongo_ok = False
     try:
         from services.chat_history_service import (
             get_user_history as _admin_get_hist,
@@ -1713,17 +1727,20 @@ def _render_team_panel(key_prefix: str = "side") -> None:
             turns_to_conversations as _ttc,
         )
         from services.user_auth import list_users as _list_users
+        from services.user_auth import mongo_users_available
         from services.user_auth import person_label as _person_label
 
         roster = _list_users()
         history_users = set(list_history_usernames())
-    except Exception:
+        mongo_ok = bool(mongo_users_available())
+    except Exception as exc:
         roster = []
         history_users = set()
         _ttc = None
         _admin_get_hist = None
         get_user_usage_summary = None
         _person_label = lambda u: u  # noqa: E731
+        load_error = str(exc)
 
     by_email: Dict[str, Dict[str, Any]] = {}
     for row in roster or []:
@@ -1735,10 +1752,27 @@ def _render_team_panel(key_prefix: str = "side") -> None:
             hist_user,
             {"username": hist_user, "email": hist_user, "status": "active"},
         )
+    # Bootstrap admin lives in .env, not the users collection — still show them.
+    me = str(st.session_state.get("username") or "").strip().lower()
+    if me:
+        by_email.setdefault(
+            me,
+            {"username": me, "email": me, "status": "admin"},
+        )
 
     st.markdown("**Team**")
+    st.caption(
+        "User store: MongoDB connected"
+        if mongo_ok
+        else "User store: local only — set MONGODB_URI for Cloud"
+    )
+    if load_error:
+        st.caption(f"Team list failed to load: {load_error[:120]}")
     if not by_email:
-        st.caption("No users yet")
+        st.caption(
+            "No signed-up users yet. Bootstrap admin is not stored in Users — "
+            "approve a signup, or generate a chat so history appears here."
+        )
         return
 
     def _sort_key(item):
@@ -1757,12 +1791,15 @@ def _render_team_panel(key_prefix: str = "side") -> None:
         except Exception:
             usage = {}
         conv_n = int(usage.get("conversation_count") or 0)
-        with st.expander(f"{name} · {conv_n}", expanded=False):
+        week_n = int(usage.get("week_conversation_count") or 0)
+        with st.expander(f"{name} · {conv_n} chats · {week_n}/7d", expanded=False):
             st.caption(f"{email} · {status}")
+            if usage.get("last_activity"):
+                st.caption(f"Last active: {usage.get('last_activity')}")
             if _admin_get_hist is None or _ttc is None:
                 st.caption("History unavailable")
                 continue
-            turns = _admin_get_hist(email, limit=80)
+            turns = _admin_get_hist(email, limit=200)
             convs = _ttc(turns)
             if not convs:
                 st.caption("No chats yet")
@@ -1770,8 +1807,51 @@ def _render_team_panel(key_prefix: str = "side") -> None:
                 _render_conversation_buttons(
                     convs,
                     key_prefix=f"{key_prefix}_admin_{email}",
-                    limit=12,
+                    limit=30,
                 )
+
+
+def _render_usage_report_panel(key_prefix: str = "top") -> None:
+    """Weekly portal usage report for admin (CSV download)."""
+    with st.expander("Weekly usage report", expanded=False):
+        try:
+            from services.chat_history_service import (
+                build_portal_usage_report,
+                usage_report_csv,
+            )
+            from services.user_auth import mongo_users_available
+        except Exception as exc:
+            st.error(f"Report unavailable: {exc}")
+            return
+
+        days = st.selectbox(
+            "Period",
+            options=[7, 14, 30],
+            index=0,
+            key=f"{key_prefix}_usage_days",
+            format_func=lambda d: f"Last {d} days",
+        )
+        if not mongo_users_available():
+            st.warning(
+                "MongoDB is not connected. Report may miss Cloud signups. "
+                "Set MONGODB_URI in Streamlit secrets."
+            )
+        rows = build_portal_usage_report(days=int(days))
+        if not rows:
+            st.caption("No usage yet")
+            return
+        active = sum(1 for r in rows if int(r.get(f"turns_last_{days}d") or 0) > 0)
+        st.caption(f"{len(rows)} users · {active} active in last {days} days")
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+        csv_text = usage_report_csv(days=int(days))
+        st.download_button(
+            "Download CSV",
+            data=csv_text,
+            file_name=f"portal_usage_last_{days}d.csv",
+            mime="text/csv",
+            key=f"{key_prefix}_usage_csv",
+            use_container_width=True,
+        )
 
 
 def _render_top_bar() -> None:
@@ -1881,6 +1961,7 @@ if not st.session_state.brands:
 _render_top_bar()
 if st.session_state.is_admin:
     _render_approvals_panel(key_prefix="top")
+    _render_usage_report_panel(key_prefix="top")
 
 if st.session_state.main_view == "history" and st.session_state.active_conversation:
     st.title(ist_greeting(st.session_state.username))
