@@ -37,25 +37,123 @@ def _mongo_collection():
         return None
 
 
-def _migrate_file_to_mongo_if_empty(col) -> None:
-    """One-time seed: copy local file history into Mongo when the collection is empty."""
+def _turn_fingerprint(doc: Dict[str, Any]) -> str:
+    """Stable key so file/Mongo merges do not create duplicates."""
+    return "|".join(
+        [
+            str(doc.get("username") or "").strip().lower(),
+            str(doc.get("created_at") or ""),
+            str(doc.get("role") or ""),
+            str(doc.get("content") or "")[:120],
+        ]
+    )
+
+
+def sync_file_history_to_mongo(force: bool = False) -> int:
+    """
+    Push any local `data/chat_history.json` turns that are missing from Mongo.
+
+    Safe to call repeatedly — only inserts fingerprints not already present.
+    Returns number of turns inserted. Critical for Streamlit Cloud: the JSON
+    file is gitignored / ephemeral, so Mongo must hold every past test.
+    """
+    col = _mongo_collection()
+    if col is None:
+        return 0
     try:
-        if col.estimated_document_count() > 0:
-            return
         data = _load_file()
         if not data:
-            return
-        docs: List[Dict[str, Any]] = []
+            return 0
+
+        existing: set[str] = set()
+        try:
+            for doc in col.find(
+                {},
+                {"_id": 0, "username": 1, "created_at": 1, "role": 1, "content": 1},
+            ):
+                existing.add(_turn_fingerprint(doc))
+        except Exception as exc:
+            logger.warning("Could not read Mongo fingerprints: %s", exc)
+            if not force and col.estimated_document_count() > 0:
+                return 0
+
+        to_insert: List[Dict[str, Any]] = []
         for turns in data.values():
             for t in turns or []:
-                if isinstance(t, dict) and t.get("content"):
-                    docs.append(dict(t))
-        if not docs:
-            return
-        col.insert_many(docs, ordered=False)
-        logger.info("Migrated %d chat history turns from file → Mongo", len(docs))
+                if not isinstance(t, dict) or not t.get("content"):
+                    continue
+                payload = dict(t)
+                # Normalise username for stable queries
+                payload["username"] = str(payload.get("username") or "").strip().lower()
+                fp = _turn_fingerprint(payload)
+                if fp in existing:
+                    continue
+                existing.add(fp)
+                to_insert.append(payload)
+
+        if not to_insert:
+            return 0
+        col.insert_many(to_insert, ordered=False)
+        logger.info("Synced %d chat history turns from file → Mongo", len(to_insert))
+        return len(to_insert)
     except Exception as exc:
-        logger.warning("chat history file→Mongo migrate skipped: %s", exc)
+        logger.warning("chat history file→Mongo sync skipped: %s", exc)
+        return 0
+
+
+def _migrate_file_to_mongo_if_empty(col) -> None:
+    """Backward-compatible entry: always merge missing file turns into Mongo."""
+    sync_file_history_to_mongo(force=False)
+
+
+def ensure_history_synced() -> Dict[str, Any]:
+    """
+    Make history durable for the Streamlit UI.
+
+    - Merge local file → Mongo (so Cloud / other machines keep past tests)
+    - Mirror Mongo → local file when possible (laptop backup)
+    """
+    inserted = sync_file_history_to_mongo(force=True)
+    mirrored = 0
+    col = _mongo_collection()
+    if col is not None:
+        try:
+            data = _load_file()
+            file_fps: set[str] = set()
+            for turns in data.values():
+                for t in turns or []:
+                    if isinstance(t, dict):
+                        file_fps.add(_turn_fingerprint(t))
+
+            for doc in col.find({}, {"_id": 0}):
+                if not isinstance(doc, dict) or not doc.get("content"):
+                    continue
+                user = str(doc.get("username") or "").strip().lower()
+                if not user:
+                    continue
+                fp = _turn_fingerprint(doc)
+                if fp in file_fps:
+                    continue
+                bucket = data.setdefault(user, [])
+                bucket.append(dict(doc))
+                file_fps.add(fp)
+                mirrored += 1
+            if mirrored:
+                for user, bucket in list(data.items()):
+                    if len(bucket) > 500:
+                        data[user] = bucket[-500:]
+                _save_file(data)
+                logger.info("Mirrored %d Mongo turns → local chat_history.json", mirrored)
+        except Exception as exc:
+            logger.warning("Mongo→file mirror skipped: %s", exc)
+
+    total = 0
+    if col is not None:
+        try:
+            total = int(col.count_documents({}))
+        except Exception:
+            total = 0
+    return {"inserted_to_mongo": inserted, "mirrored_to_file": mirrored, "mongo_total": total}
 
 
 def _load_file() -> Dict[str, List[Dict[str, Any]]]:
@@ -123,7 +221,7 @@ def add_turn(
     return mongo_ok or file_ok
 
 
-def get_user_history(username: str, limit: int = 100) -> List[Dict[str, Any]]:
+def get_user_history(username: str, limit: int = 500) -> List[Dict[str, Any]]:
     """Return oldest-first turns for one user (merges email + local-part aliases)."""
     aliases = _username_aliases(username)
     if not aliases:
@@ -147,7 +245,8 @@ def get_user_history(username: str, limit: int = 100) -> List[Dict[str, Any]]:
 
     col = _mongo_collection()
     if col is not None:
-        _migrate_file_to_mongo_if_empty(col)
+        # Keep Mongo complete so Streamlit Cloud never loses laptop test history
+        sync_file_history_to_mongo(force=False)
         try:
             cursor = (
                 col.find({"username": {"$in": aliases}}, {"_id": 0})
