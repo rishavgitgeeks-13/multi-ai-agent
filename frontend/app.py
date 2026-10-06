@@ -176,11 +176,31 @@ def fetch_session_history(session_id: str, limit: int = 50) -> List[Dict]:
     return []
 
 
-def fetch_user_history(username: str, limit: int = 100) -> List[Dict]:
-    """Load persisted per-user chat history (survives logout/login)."""
+def fetch_user_history(username: str, limit: int = 500) -> List[Dict]:
+    """Load persisted per-user chat history (survives logout/login).
+
+    Prefer the local service (Mongo + file merge) so past tests are never
+    dropped when the API returns a partial Mongo-only slice.
+    """
     if not username:
         return []
-    turns: List[Dict] = []
+    # Service-first: durable merge of Mongo + local file
+    try:
+        from services.chat_history_service import (
+            ensure_history_synced,
+            get_user_history,
+        )
+
+        if not st.session_state.get("_history_synced_once"):
+            ensure_history_synced()
+            st.session_state["_history_synced_once"] = True
+        turns = get_user_history(username, limit=limit)
+        if turns:
+            return turns
+    except Exception:
+        turns = []
+
+    # API fallback (e.g. remote-only setups)
     try:
         resp = requests.get(
             f"{st.session_state.api_url}/api/chat/users/{username}/history",
@@ -188,18 +208,12 @@ def fetch_user_history(username: str, limit: int = 100) -> List[Dict]:
             timeout=8,
         )
         if resp.status_code == 200:
-            turns = resp.json().get("turns") or []
+            remote = resp.json().get("turns") or []
+            if remote:
+                return remote
     except Exception:
-        turns = []
-    if turns:
-        return turns
-    # Direct service fallback when API is down / empty (local Mongo or file)
-    try:
-        from services.chat_history_service import get_user_history
-
-        return get_user_history(username, limit=limit)
-    except Exception:
-        return []
+        pass
+    return turns if turns else []
 
 
 def fetch_team_activity(limit: int = 60) -> List[Dict]:
@@ -1761,11 +1775,24 @@ def _render_team_panel(key_prefix: str = "side") -> None:
         )
 
     st.markdown("**Team**")
+    try:
+        from services.chat_history_service import ensure_history_synced
+
+        if not st.session_state.get("_history_synced_once"):
+            sync_info = ensure_history_synced()
+            st.session_state["_history_synced_once"] = True
+            st.session_state["_history_sync_info"] = sync_info
+    except Exception:
+        pass
     st.caption(
-        "User store: MongoDB connected"
+        "User store: MongoDB connected — all past chats kept for weekly reports"
         if mongo_ok
-        else "User store: local only — set MONGODB_URI for Cloud"
+        else "User store: local only — set MONGODB_URI for Cloud (history can be lost)"
     )
+    sync_info = st.session_state.get("_history_sync_info") or {}
+    if mongo_ok and sync_info.get("mongo_total"):
+        st.caption(f"History archive: {sync_info.get('mongo_total')} turns in MongoDB")
+
     if load_error:
         st.caption(f"Team list failed to load: {load_error[:120]}")
     if not by_email:
@@ -1799,7 +1826,7 @@ def _render_team_panel(key_prefix: str = "side") -> None:
             if _admin_get_hist is None or _ttc is None:
                 st.caption("History unavailable")
                 continue
-            turns = _admin_get_hist(email, limit=200)
+            turns = _admin_get_hist(email, limit=500)
             convs = _ttc(turns)
             if not convs:
                 st.caption("No chats yet")
@@ -1807,8 +1834,10 @@ def _render_team_panel(key_prefix: str = "side") -> None:
                 _render_conversation_buttons(
                     convs,
                     key_prefix=f"{key_prefix}_admin_{email}",
-                    limit=30,
+                    limit=200,
                 )
+                if len(convs) > 200:
+                    st.caption(f"+{len(convs) - 200} older")
 
 
 def _render_usage_report_panel(key_prefix: str = "top") -> None:
@@ -1923,9 +1952,11 @@ with st.sidebar:
     if not my_conversations:
         st.caption("No chats yet")
     else:
-        _render_conversation_buttons(my_conversations, "my_hist", limit=18)
-        if len(my_conversations) > 18:
-            st.caption(f"+{len(my_conversations) - 18} older")
+        _render_conversation_buttons(my_conversations, "my_hist", limit=200)
+        if len(my_conversations) > 200:
+            st.caption(f"+{len(my_conversations) - 200} older")
+        else:
+            st.caption(f"{len(my_conversations)} chats saved")
 
     if st.session_state.is_admin:
         st.divider()
