@@ -147,21 +147,65 @@ def _mongo_collection():
         return None
 
 
+def mongo_users_available() -> bool:
+    """True when signup/login can persist across machines (Streamlit Cloud)."""
+    return _mongo_collection() is not None
+
+
+def _lookup_keys(username: str) -> List[str]:
+    """Match both name@gitgeeks.com and legacy local-part-only usernames."""
+    raw = (username or "").strip().lower()
+    if not raw:
+        return []
+    keys = [raw]
+    if "@" in raw:
+        local = raw.split("@", 1)[0]
+        if local and local not in keys:
+            keys.append(local)
+        _, email, _ = normalize_user_id(raw)
+        if email and email not in keys:
+            keys.insert(0, email)
+    else:
+        _, email, _ = normalize_user_id(raw)
+        if email and email not in keys:
+            keys.insert(0, email)
+    # Unique, email-first
+    seen: List[str] = []
+    for k in keys:
+        if k and k not in seen:
+            seen.append(k)
+    return seen
+
+
 def _get_user(username: str) -> Optional[Dict[str, Any]]:
-    key = (username or "").strip().lower()
-    if not key:
+    keys = _lookup_keys(username)
+    if not keys:
         return None
     col = _mongo_collection()
     if col is not None:
         try:
-            doc = col.find_one({"username": key}, {"_id": 0})
-            if doc:
-                return doc
+            for key in keys:
+                doc = col.find_one(
+                    {"$or": [{"username": key}, {"email": key}]},
+                    {"_id": 0},
+                )
+                if doc:
+                    return doc
         except Exception as exc:
             logger.warning("Mongo get_user failed: %s", exc)
 
     users = _load_file_users()
-    return users.get(key)
+    for key in keys:
+        if key in users:
+            return users[key]
+        for doc in users.values():
+            if not isinstance(doc, dict):
+                continue
+            if str(doc.get("username") or "").strip().lower() in keys:
+                return doc
+            if str(doc.get("email") or "").strip().lower() in keys:
+                return doc
+    return None
 
 
 def _upsert_user(doc: Dict[str, Any]) -> Tuple[bool, str]:
@@ -169,16 +213,31 @@ def _upsert_user(doc: Dict[str, Any]) -> Tuple[bool, str]:
     if not key:
         return False, "Missing username."
 
+    # Always store canonical email fields when possible
+    payload = dict(doc)
+    payload["username"] = key
+    if "@" in key and not payload.get("email"):
+        payload["email"] = key
+
     col = _mongo_collection()
     if col is not None:
         try:
-            col.update_one({"username": key}, {"$set": dict(doc)}, upsert=True)
+            col.update_one({"username": key}, {"$set": payload}, upsert=True)
+            # Best-effort local mirror (helps laptop admin; Cloud disk is ephemeral)
+            try:
+                users = _load_file_users()
+                users[key] = payload
+                _save_file_users(users)
+            except Exception:
+                pass
             return True, ""
         except Exception as exc:
-            logger.warning("Mongo upsert failed, trying file: %s", exc)
+            logger.error("Mongo upsert failed: %s", exc)
+            return False, "Could not save account to MongoDB. Check MONGODB_URI."
 
+    # Local-only fallback (development without Mongo)
     users = _load_file_users()
-    users[key] = dict(doc)
+    users[key] = payload
     try:
         _save_file_users(users)
         return True, ""
@@ -233,6 +292,14 @@ def signup(username: str, password: str, confirm_password: str = "") -> Tuple[bo
                 "This signup was rejected. Contact admin if you need access.",
             )
         return False, "Username already exists. Please log in instead."
+
+    # Cloud has no durable disk — never create accounts only in users.json there.
+    if _mongo_collection() is None:
+        return (
+            False,
+            "User directory is not connected (MongoDB). "
+            "Ask admin to set MONGODB_URI in Streamlit secrets so signups persist.",
+        )
 
     password_hash, salt = _hash_password(password)
     local = email.split("@")[0]
@@ -325,7 +392,7 @@ def login(username: str, password: str) -> Tuple[bool, str]:
     if status != STATUS_APPROVED:
         return False, "Account is not active. Contact admin."
 
-    return True, user.get("display_name") or email
+    return True, user.get("email") or user.get("username") or email
 
 
 def list_users(status: Optional[str] = None) -> List[Dict[str, Any]]:
