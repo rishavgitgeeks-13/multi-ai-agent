@@ -68,6 +68,13 @@ class FinalEditorService:
         )
         mode_policy = brand_context.get("mode_policy") or strategy.get("mode_policy") or {}
 
+        evidence_ledger = list(
+            strategy.get("evidence_ledger")
+            or (brand_context.get("evidence_ledger") if isinstance(brand_context, dict) else None)
+            or []
+        )
+        searcher_questions = list(strategy.get("searcher_questions") or [])
+
         flags = run_final_qc(
             draft or "",
             primary_keywords=primary,
@@ -77,6 +84,8 @@ class FinalEditorService:
             content_type=content_type,
             mode_policy=mode_policy if isinstance(mode_policy, dict) else {},
             brand_keywords=brand_kws,
+            evidence_ledger=evidence_ledger,
+            searcher_questions=searcher_questions,
         )
         if only_flags:
             # Surgical single-chip: keep only flags matching requested prefixes/substrings
@@ -132,6 +141,8 @@ class FinalEditorService:
                         content_type=content_type,
                         mode_policy=mode_policy if isinstance(mode_policy, dict) else {},
                         brand_keywords=brand_kws,
+                        evidence_ledger=evidence_ledger,
+                        searcher_questions=searcher_questions,
                     )
                     summary = qc_summary(flags_after)
                     summary["flags_before"] = flags
