@@ -134,13 +134,21 @@ def _save_file_users(users: Dict[str, Dict[str, Any]]) -> None:
     )
 
 
+_USERS_INDEXES_READY = False
+_MONGO_USERS_OK: Optional[bool] = None
+
+
 def _mongo_collection():
+    global _USERS_INDEXES_READY
     try:
         from memory.mongodb import MongoDBClient
 
         client = MongoDBClient()
         col = client.db.users
-        col.create_index("username", unique=True)
+        # Avoid create_index on every auth/history check (hurts Streamlit load)
+        if not _USERS_INDEXES_READY:
+            col.create_index("username", unique=True)
+            _USERS_INDEXES_READY = True
         return col
     except Exception as exc:
         logger.info("Mongo user store unavailable, using file fallback: %s", exc)
@@ -149,7 +157,11 @@ def _mongo_collection():
 
 def mongo_users_available() -> bool:
     """True when signup/login can persist across machines (Streamlit Cloud)."""
-    return _mongo_collection() is not None
+    global _MONGO_USERS_OK
+    if _MONGO_USERS_OK is not None:
+        return _MONGO_USERS_OK
+    _MONGO_USERS_OK = _mongo_collection() is not None
+    return _MONGO_USERS_OK
 
 
 def _lookup_keys(username: str) -> List[str]:
