@@ -67,8 +67,8 @@ if "main_view" not in st.session_state:
     st.session_state.main_view = "create"  # create | history
 if "is_admin" not in st.session_state:
     st.session_state.is_admin = False
-API_BASE_URL = "http://54.218.34.106:9000"
-#API_BASE_URL = "http://localhost:8000"
+#API_BASE_URL = "http://54.218.34.106:9000"
+API_BASE_URL = "http://localhost:8000"
 
 # Always point at the deployed API (do not let an old empty session value stick).
 st.session_state.api_url = API_BASE_URL
@@ -465,18 +465,41 @@ def _inject_app_chrome_css() -> None:
         }
 
         /* ---------- Sidebar (calm, compact) ---------- */
+        /* Critical: keep the sidebar fully scrollable — custom chrome must not clip content */
+        section[data-testid="stSidebar"],
         [data-testid="stSidebar"] {
             background: #f4f7f6 !important;
             border-right: 1px solid var(--ei-line);
+            height: 100vh !important;
+            max-height: 100vh !important;
+            overflow: hidden !important;
         }
+        section[data-testid="stSidebar"] > div:first-child,
         [data-testid="stSidebar"] > div:first-child {
             background: transparent;
             padding-top: 0.55rem;
             padding-left: 0.55rem;
             padding-right: 0.55rem;
+            padding-bottom: 2.5rem !important;
+            height: 100% !important;
+            max-height: 100vh !important;
+            overflow-y: auto !important;
+            overflow-x: hidden !important;
+            overscroll-behavior: contain;
+        }
+        [data-testid="stSidebarContent"],
+        [data-testid="stSidebarUserContent"] {
+            height: auto !important;
+            max-height: none !important;
+            overflow: visible !important;
+            padding-bottom: 1.5rem !important;
         }
         [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
             gap: 0.28rem !important;
+            overflow: visible !important;
+        }
+        [data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] {
+            overflow: visible !important;
         }
         [data-testid="stSidebar"] * {
             color: var(--ei-ink) !important;
@@ -1859,7 +1882,6 @@ def _render_team_panel(key_prefix: str = "side") -> None:
             {"username": me, "email": me, "status": "admin"},
         )
 
-    st.markdown("**Team**")
     # Do not run history sync on every admin sidebar render — hurts load time.
     st.caption(
         "MongoDB connected"
@@ -2059,7 +2081,9 @@ with st.sidebar:
 
     if st.session_state.is_admin:
         st.divider()
-        _render_team_panel(key_prefix="side")
+        # Collapsed by default so your Chats list stays scrollable / visible
+        with st.expander("Team history", expanded=False):
+            _render_team_panel(key_prefix="side")
 
     st.divider()
     if not st.session_state.brands:
@@ -2070,6 +2094,8 @@ with st.sidebar:
                 st.caption(brand.get("display_name") or brand.get("name") or "")
         else:
             st.caption("Unavailable")
+    # Spacer so the last chat / Show more is not clipped under the viewport edge
+    st.markdown('<div style="height:2.5rem"></div>', unsafe_allow_html=True)
 
 
 # Ensure brands loaded for workflow selectors
