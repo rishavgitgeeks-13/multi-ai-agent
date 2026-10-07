@@ -779,6 +779,45 @@ class ReviewService:
             except Exception:
                 pass
 
+            # Absolute SEO claims + early definition (mode-aware)
+            try:
+                from services.final_qc import (
+                    absolute_seo_claim_issues,
+                    definition_near_top_issues,
+                )
+
+                pol = (brand_context or {}).get("mode_policy") or strategy.get(
+                    "mode_policy"
+                ) or {}
+                issues.extend(
+                    absolute_seo_claim_issues(
+                        draft,
+                        mode_policy=pol if isinstance(pol, dict) else {},
+                        ledger=strategy.get("evidence_ledger") or [],
+                    )
+                )
+                issues.extend(
+                    definition_near_top_issues(
+                        draft,
+                        mode_policy=pol if isinstance(pol, dict) else {},
+                        primary_topic=primary_topic or "",
+                    )
+                )
+            except Exception:
+                pass
+
+            # Information gain — searcher question coverage
+            try:
+                from services.searcher_questions import question_coverage_issues
+
+                issues.extend(
+                    question_coverage_issues(
+                        draft, list(strategy.get("searcher_questions") or [])
+                    )
+                )
+            except Exception:
+                pass
+
         # ---- Generic fidelity gate (all brands) ----
         try:
             from services.fidelity_gate import BriefLock, review_fidelity_issues
