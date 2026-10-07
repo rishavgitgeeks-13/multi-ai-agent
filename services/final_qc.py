@@ -337,6 +337,187 @@ def mode_policy_issues(
     return issues
 
 
+def absolute_seo_claim_issues(
+    draft: str,
+    *,
+    mode_policy: Optional[Dict[str, Any]] = None,
+    ledger: Optional[Sequence[Dict[str, Any]]] = None,
+) -> List[str]:
+    """
+    Soften rigid/unsourced SEO and marketing absolutes.
+
+    Stricter on awareness / seo_page / authority; lead_gen allows sharper claims
+    when ledger-backed or clearly scoped.
+    """
+    issues: List[str] = []
+    policy = mode_policy if isinstance(mode_policy, dict) else {}
+    strict = bool(policy.get("absolute_claims_strict", True))
+    body = _body_only(draft)
+    if not body.strip():
+        return issues
+
+    patterns = [
+        (r"(?i)\bguaranteed\b", "guaranteed"),
+        (r"(?i)\brisk[-\s]?free\b", "risk-free"),
+        (r"(?i)\b100\s*%\s*safe\b", "100% safe"),
+        (r"(?i)\b(?:the\s+)?#?\s*1\s+(?:in|for)\b", "#1 ranking claim"),
+        (r"(?i)\bbest\s+in\s+(?:india|delhi|gurgaon|the\s+world)\b", "best-in-market"),
+        (r"(?i)\bunmatched\b", "unmatched"),
+        (r"(?i)\balways\s+(?:the\s+)?(?:best|safest|cheapest)\b", "always-best absolute"),
+        (r"(?i)\bnever\s+(?:fail|fails|lose|loses)\b", "never-fail absolute"),
+    ]
+    hits = []
+    for pat, label in patterns:
+        if re.search(pat, body):
+            hits.append(label)
+
+    # Unscoped market-size style claims without attribution nearby
+    market = re.finditer(
+        r"(?i)\b(?:market\s+(?:is\s+)?worth|valued\s+at|will\s+reach|is\s+expected\s+to\s+reach)\b"
+        r"[^.\n]{0,80}",
+        body,
+    )
+    for m in market:
+        window_start = max(0, m.start() - 100)
+        window = body[window_start : m.end() + 40]
+        if not re.search(
+            r"(?i)\b(according to|as per|report|survey|study|20[12]\d)\b", window
+        ):
+            hits.append("unscoped market-size claim")
+
+    if not hits:
+        return issues
+
+    has_ledger = bool(ledger)
+    if strict or not has_ledger:
+        issues.append(
+            "QC_SEO_CLAIM: Absolute or rigid SEO/marketing claims found ("
+            + ", ".join(hits[:5])
+            + "). Soften with scope (audience, place, year) or back with a ledger "
+            "source — avoid unsourced #1 / guaranteed / always-best language."
+        )
+    elif len(hits) >= 2:
+        issues.append(
+            "QC_SEO_CLAIM: Multiple absolute claims ("
+            + ", ".join(hits[:5])
+            + "). Keep only ledger-backed or clearly scoped statements."
+        )
+    return issues
+
+
+def definition_near_top_issues(
+    draft: str,
+    *,
+    mode_policy: Optional[Dict[str, Any]] = None,
+    primary_topic: str = "",
+) -> List[str]:
+    """
+    For modes that require an early searcher definition, flag intros that never
+    define the entity (what X is / how it differs).
+    """
+    policy = mode_policy if isinstance(mode_policy, dict) else {}
+    if not policy.get("require_early_definition"):
+        return []
+
+    body = _body_only(draft)
+    if len(body) < 280:
+        return []
+
+    # First ~120 words after H1
+    after_h1 = re.sub(r"^#\s+.+\n+", "", body, count=1, flags=re.M)
+    words = re.findall(r"\S+", after_h1)
+    intro = " ".join(words[:120])
+    intro_l = intro.lower()
+
+    def_cues = re.search(
+        r"(?i)\b("
+        r"is\s+(?:a|an|the)\b|"
+        r"refers\s+to\b|"
+        r"means\b|"
+        r"differs?\s+from\b|"
+        r"unlike\b|"
+        r"as\s+opposed\s+to\b|"
+        r"in\s+simple\s+terms\b|"
+        r"put\s+simply\b"
+        r")",
+        intro,
+    )
+    # Avoid counting "X is important" as a definition
+    if def_cues and re.search(
+        r"(?i)\bis\s+(?:important|crucial|essential|vital|key)\b", intro
+    ):
+        # Still ok if another real definition cue exists
+        if not re.search(
+            r"(?i)\b(refers to|means|differs? from|unlike|as opposed to|"
+            r"is a|is an)\b",
+            intro_l,
+        ):
+            def_cues = None
+
+    if def_cues:
+        return []
+
+    topic_hint = (primary_topic or "").strip()
+    hint = f" for “{topic_hint[:60]}”" if topic_hint else ""
+    return [
+        "QC_DEFINITION: Missing a crisp searcher definition near the top"
+        f"{hint}. In the first 1–2 paragraphs, say what it is / how it differs "
+        "(not “X is important”), then continue with scene or proof."
+    ]
+
+
+def ai_rhythm_issues(draft: str) -> List[str]:
+    """Detect AI cadence beyond cliché lists: hedge stacks, triads, same openers."""
+    issues: List[str] = []
+    body = _body_only(draft)
+    if len(body) < 400:
+        return issues
+
+    # Stacked hedges in one sentence
+    hedge_hits = re.findall(
+        r"(?i)\b(it(?:'s| is) important to(?: note)?|it(?:'s| is) worth noting|"
+        r"generally speaking|in many cases|to some extent|on the one hand|"
+        r"needless to say|as we (?:all )?know)\b",
+        body,
+    )
+    if len(hedge_hits) >= 4:
+        issues.append(
+            "QC_AI_RHYTHM: Stacked hedging / throat-clearing phrases. "
+            "Cut filler hedges and state the point directly."
+        )
+
+    # Rhetorical triad abuse: "X, Y, and Z" repeated with similar shape
+    triads = re.findall(
+        r"\b([A-Za-z][A-Za-z\- ]{2,28}),\s+([A-Za-z][A-Za-z\- ]{2,28}),?\s+and\s+"
+        r"([A-Za-z][A-Za-z\- ]{2,28})\b",
+        body,
+    )
+    if len(triads) >= 4:
+        issues.append(
+            "QC_AI_RHYTHM: Too many rhetorical three-part stacks "
+            "(“better, faster, stronger” style). Prefer one concrete detail."
+        )
+
+    # Identical section-open scaffolds already partly in formulaic_structure;
+    # add short-sentence march detection: many consecutive 8–14 word sentences
+    sentences = re.split(r"(?<=[.!?])\s+", re.sub(r"\s+", " ", body))
+    shortish = 0
+    streak = 0
+    for s in sentences:
+        n = len(s.split())
+        if 8 <= n <= 14:
+            streak += 1
+            shortish = max(shortish, streak)
+        else:
+            streak = 0
+    if shortish >= 6:
+        issues.append(
+            "QC_AI_RHYTHM: Uniform sentence rhythm (many mid-length sentences in a row). "
+            "Vary length — mix short punches with longer explanatory lines."
+        )
+    return issues
+
+
 def run_final_qc(
     draft: str,
     *,
@@ -347,6 +528,8 @@ def run_final_qc(
     content_type: str = "article",
     mode_policy: Optional[Dict[str, Any]] = None,
     brand_keywords: Optional[Sequence[str]] = None,
+    evidence_ledger: Optional[Sequence[Dict[str, Any]]] = None,
+    searcher_questions: Optional[Sequence[str]] = None,
 ) -> List[str]:
     """Run all Final QC detectors for long-form content."""
     ct = (content_type or "").lower()
@@ -357,6 +540,11 @@ def run_final_qc(
         flags.extend(duplicate_cta_issues(draft, cta=cta))
         flags.extend(
             mode_policy_issues(draft, mode_policy=mode_policy, brand_keywords=brand_keywords)
+        )
+        flags.extend(
+            absolute_seo_claim_issues(
+                draft, mode_policy=mode_policy, ledger=evidence_ledger
+            )
         )
         return flags
 
@@ -370,6 +558,31 @@ def run_final_qc(
     flags.extend(
         mode_policy_issues(draft, mode_policy=mode_policy, brand_keywords=brand_keywords)
     )
+    flags.extend(
+        absolute_seo_claim_issues(
+            draft, mode_policy=mode_policy, ledger=evidence_ledger
+        )
+    )
+    flags.extend(
+        definition_near_top_issues(
+            draft, mode_policy=mode_policy, primary_topic=primary_topic
+        )
+    )
+    flags.extend(ai_rhythm_issues(draft))
+    try:
+        from services.evidence_ledger import stat_fidelity_issues
+
+        flags.extend(stat_fidelity_issues(draft, list(evidence_ledger or [])))
+    except Exception:
+        pass
+    try:
+        from services.searcher_questions import question_coverage_issues
+
+        flags.extend(
+            question_coverage_issues(draft, list(searcher_questions or []))
+        )
+    except Exception:
+        pass
     try:
         from services.fidelity_gate import humanize_review_issues
 
