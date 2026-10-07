@@ -1690,10 +1690,34 @@ class ResearchService:
                         snip_l,
                     ):
                         score += 0.15
-                    scored.append((score, snippet))
+                    # Prefer year + attributable source (citation fidelity)
+                    has_year = bool(
+                        re.search(r"\b(20[12]\d)\b", snip_l)
+                        or re.search(r"\b(20[12]\d)\b", title_l)
+                    )
+                    has_src = bool(source_label) or bool(
+                        re.search(r"\(source:\s*[^)]+\)", snip_l)
+                    )
+                    if has_year and has_src:
+                        score += 0.45
+                    elif has_year or has_src:
+                        score += 0.2
+                    else:
+                        score -= 0.35  # orphan number — demote heavily
+                    # Sample / cohort cues improve fidelity
+                    if re.search(
+                        r"\b(respondents?|surveyed|sample|n\s*=\s*\d|households)\b",
+                        snip_l,
+                    ):
+                        score += 0.1
+                    scored.append((score, snippet, has_year or has_src))
 
         scored.sort(key=lambda x: x[0], reverse=True)
-        return [s for _, s in scored[:12]]
+        # Prefer attributable stats; fall back only if the pool is empty
+        attributed = [s for _, s, ok in scored if ok]
+        if len(attributed) >= 3:
+            return attributed[:12]
+        return [s for _, s, *_ in scored[:12]]
 
     def _extract_citations(
         self,
