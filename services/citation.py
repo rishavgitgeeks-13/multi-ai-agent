@@ -98,6 +98,21 @@ class CitationService:
             user_input or "",
             brief_lock=brief_lock,
         )
+        # Wire CitationValidator so Sources keep usable text/URL shape
+        try:
+            from validators.citation_validator import CitationValidator
+
+            validated = CitationValidator.validate_citation_list(
+                merged, min_count=0, deduplicate=True
+            )
+            if validated.ok and isinstance(validated.data, list):
+                merged = validated.data
+            elif validated.data:
+                merged = list(validated.data)
+            for w in (validated.warnings or [])[:6]:
+                logger.debug("CitationValidator: %s", w)
+        except Exception as exc:
+            logger.warning("CitationValidator skipped: %s", exc)
         logger.info("CitationService complete | citations=%d", len(merged))
         return merged
 
