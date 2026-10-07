@@ -236,6 +236,12 @@ AWARENESS-FIRST PACING (mandatory — write an awareness piece, not a sales broc
     @staticmethod
     def _stat_context_rules() -> str:
         return (
+            "- STAT FIDELITY: Never paraphrase a statistic until claim, sample, year, and "
+            "context are verified in the EVIDENCE LEDGER / RESEARCH STATS. "
+            "Use this template when a ledger entry has the fields: "
+            "'According to {source} ({year}), {claim} — {sample or context}'. "
+            "If year/sample is blank in the ledger, do not invent it; attribute what exists "
+            "and hedge. Drop the figure rather than orphaning a number.\n"
             "- When citing RESEARCH STATS, include source name plus year and/or scope "
             "(geography, sample, report name) when those details appear in the snippet. "
             "Do not invent missing year/scope; if absent, attribute what is available and avoid overclaiming.\n"
@@ -248,9 +254,10 @@ AWARENESS-FIRST PACING (mandatory — write an awareness piece, not a sales broc
             "- TEMPORAL CONSISTENCY: If the title/brief is framed for a year (e.g. 2026), "
             "do not cite sources dated AFTER that year (e.g. '(2027)'). Use same-year or "
             "earlier sources, or omit the citation.\n"
-            "- ABSOLUTE LANGUAGE: Avoid 'risk-free', 'guaranteed', 'unmatched', "
-            "'more favorable than ever', or 'cut down the risk' as proven fact. Qualify "
-            "claims (e.g. 'greater oversight… although project-specific risks remain').\n"
+            "- ABSOLUTE LANGUAGE: Avoid 'risk-free', 'guaranteed', 'unmatched', '#1', "
+            "'best in India', 'always the safest', 'more favorable than ever', or "
+            "'cut down the risk' as proven fact. Qualify and scope claims "
+            "(audience, place, year) or back them with a ledger source.\n"
             "- HEADINGS: Do not use 'Price Predictions' unless you have real forward-looking "
             "estimates; prefer 'Price Trends' when only current prices exist.\n"
             "- BRAND CTA: Final CTA must name the brand (e.g. 'Contact MPM NRI Properties…'), "
@@ -931,6 +938,8 @@ TARGET WORDS    : ~{target_words}
 
 {self._research_plan_block(research_data, strategy, brand_context, topic_lock)}
 
+{self._searcher_questions_block(strategy)}
+
 Return a JSON object with this exact schema:
 {{
   "title": "<compelling H1 title that matches the PRIMARY TOPIC LOCK; include a primary keyword only if it still fits the brief>",
@@ -939,7 +948,7 @@ Return a JSON object with this exact schema:
     {{
       "heading": "<section heading>",
       "heading_level": 2,
-      "brief": "<1–2 sentences: what this section must cover; cite which research finding to use if relevant>",
+      "brief": "<1–2 sentences: what this section must cover; name which searcher question it answers; cite research if relevant>",
       "keywords": ["<kw1>", "<kw2>"]
     }}
   ]
@@ -948,9 +957,12 @@ Return a JSON object with this exact schema:
 Rules:
 - {n_sections} sections
 - Plan FROM the research findings: map available stats/cases into specific sections
+- Map major H2s to the SEARCHER QUESTION PACK (one primary question per major section when possible)
+- Include one SERP-differentiation section: checklist, decision table, local rule, or failure mode most ranking articles miss
 - If research is thin, plan practical how-to / checklist sections from the brief — never invent statistics
 - Every section must advance the PRIMARY TOPIC LOCK — drop brand-template sections that do not
 - content_angle must name the reader's situation from the brief (who, where, what decision)
+- Early body must include a crisp searcher definition (what it is / how it differs), not \"X is important\"
 {awareness_outline_rules}- H1 must be grammatical English and clearly about the user brief
 - Prefer natural titles over keyword-order dumps
 {keyword_assign_rule}
@@ -972,6 +984,16 @@ Rules:
         except Exception as exc:
             logger.error("Outline LLM call failed: %s — using fallback outline", exc)
             return self._fallback_outline(user_input, strategy, brand_context)
+
+    @staticmethod
+    def _searcher_questions_block(strategy: Dict) -> str:
+        try:
+            from services.searcher_questions import format_questions_for_outline
+
+            qs = list((strategy or {}).get("searcher_questions") or [])
+            return format_questions_for_outline(qs)
+        except Exception:
+            return ""
 
     @staticmethod
     def _research_plan_block(
@@ -2195,8 +2217,12 @@ Return ONLY the comment text. No hashtags. No titles. No lists.
             "Avoid a uniform, robotic cadence.\n"
             "- Vary paragraph length too — some one-liners, some fuller paragraphs. "
             "Do not make every section the same shape or word count.\n"
-            "- Open sections with a concrete scene, question, number, or claim — "
-            "never with a dictionary definition or \"X is important\".\n"
+            "- INTRO DEFINITION: In the first 1–2 paragraphs, give a crisp searcher "
+            "definition (what it is / how it differs from alternatives). Then continue "
+            "with a scene, number, or proof. Never open with \"X is important\" or a "
+            "brochure dictionary dump. Later H2s open with scene, question, number, or claim.\n"
+            "- Avoid AI rhythm: no stacked hedges, no repeated \"X, Y, and Z\" triads, "
+            "and do not march through identical mid-length sentences.\n"
             "- Demonstrate > explain (9+ bar): for every abstract claim, show what it "
             "looks like in a real business — a workflow moment, decision trade-off, "
             "cost/time impact, or team scene. Do not only explain the idea.\n"
