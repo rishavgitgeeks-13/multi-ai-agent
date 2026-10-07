@@ -749,6 +749,31 @@ def humanize_review_issues(draft: str) -> List[str]:
                 "Vary openings; write like a person explaining to a colleague."
             )
 
+    # Stacked hedges / throat-clearing
+    hedge_hits = re.findall(
+        r"(?i)\b(it is important to(?: note)?|it is worth noting|"
+        r"generally speaking|to some extent|needless to say|as we (?:all )?know|"
+        r"in many cases|on the one hand)\b",
+        body,
+    )
+    if len(hedge_hits) >= 4:
+        issues.append(
+            "HUMANIZE_HEDGE: Too many stacked hedges. Cut throat-clearing and state "
+            "the point in plain language."
+        )
+
+    # Rhetorical triad abuse
+    triads = re.findall(
+        r"\b([A-Za-z][A-Za-z\- ]{2,24}),\s+([A-Za-z][A-Za-z\- ]{2,24}),?\s+and\s+"
+        r"([A-Za-z][A-Za-z\- ]{2,24})\b",
+        body,
+    )
+    if len(triads) >= 4:
+        issues.append(
+            "HUMANIZE_TRIAD: Repeated three-part rhetorical stacks feel AI-generated. "
+            "Prefer one concrete detail over \"X, Y, and Z\" cadence."
+        )
+
     return issues
 
 
