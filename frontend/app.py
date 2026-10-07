@@ -176,25 +176,19 @@ def fetch_session_history(session_id: str, limit: int = 50) -> List[Dict]:
     return []
 
 
-def fetch_user_history(username: str, limit: int = 500) -> List[Dict]:
+def fetch_user_history(username: str, limit: int = 80) -> List[Dict]:
     """Load persisted per-user chat history (survives logout/login).
 
-    Prefer the local service (Mongo + file merge) so past tests are never
-    dropped when the API returns a partial Mongo-only slice.
+    Prefer the local service (Mongo + file merge). Heavy file↔Mongo sync is
+    not done here — that belongs on first admin/session bootstrap only.
     """
     if not username:
         return []
-    # Service-first: durable merge of Mongo + local file
+    turns: List[Dict] = []
     try:
-        from services.chat_history_service import (
-            ensure_history_synced,
-            get_user_history,
-        )
+        from services.chat_history_service import get_user_history
 
-        if not st.session_state.get("_history_synced_once"):
-            ensure_history_synced()
-            st.session_state["_history_synced_once"] = True
-        turns = get_user_history(username, limit=limit)
+        turns = get_user_history(username, limit=limit) or []
         if turns:
             return turns
     except Exception:
@@ -296,16 +290,21 @@ def append_chat_turn(
     persist: bool = True,
 ) -> None:
     """Append a turn to the in-browser history and optionally persist by username."""
+    meta = metadata or {}
+    # Persist full payload; keep a slim copy in session so Streamlit stays fast
+    if persist:
+        _persist_turn_remote(role, content, meta)
+    content_ui = content if len(content or "") <= 4000 else (content[:4000] + "…")
     turn = {
         "role": role,
-        "content": content,
-        "metadata": metadata or {},
+        "content": content_ui,
+        "metadata": _slim_metadata_for_session(meta),
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "username": st.session_state.get("username") or "",
     }
     st.session_state.chat_history.append(turn)
-    if persist:
-        _persist_turn_remote(role, content, metadata)
+    st.session_state.pop("_conv_cache_key", None)
+    st.session_state.pop("_conv_cache", None)
 
 
 def _slim_result_for_history(result: Dict[str, Any], max_md: int = 80000) -> Dict[str, Any]:
@@ -871,23 +870,111 @@ def _inject_app_chrome_css() -> None:
     )
 
 
+def _slim_metadata_for_session(meta: Any) -> Dict[str, Any]:
+    """Drop huge article markdown from session state (keeps Streamlit reruns fast)."""
+    if not isinstance(meta, dict):
+        return {}
+    out = dict(meta)
+    result = out.get("result")
+    if not isinstance(result, dict):
+        return out
+    review = result.get("review") if isinstance(result.get("review"), dict) else {}
+    final = result.get("final_output") if isinstance(result.get("final_output"), dict) else {}
+    content = final.get("content") if isinstance(final.get("content"), dict) else {}
+    md = str(content.get("markdown") or "")
+    # Keep a short stub so reopen can hydrate; full body lives in Mongo/file
+    out["result"] = {
+        "ok": result.get("ok"),
+        "errors": (result.get("errors") or [])[:3],
+        "review": {
+            "score": review.get("score"),
+            "status": review.get("status"),
+        },
+        "final_output": {
+            "content": {
+                "markdown": (md[:1200] + "…") if len(md) > 1200 else md,
+            }
+        },
+        "_slimmed": True,
+    }
+    out["_needs_hydrate"] = True
+    return out
+
+
 def _normalize_turns(raw: List[Dict]) -> List[Dict]:
-    return [
-        {
-            "role": t.get("role", ""),
-            "content": t.get("content", ""),
-            "metadata": t.get("metadata") or {},
-            "created_at": t.get("created_at") or "",
-            "username": t.get("username") or st.session_state.username,
-        }
-        for t in (raw or [])
-    ]
+    normalized: List[Dict] = []
+    for t in raw or []:
+        content = str(t.get("content") or "")
+        if len(content) > 4000:
+            content = content[:4000] + "…"
+        normalized.append(
+            {
+                "role": t.get("role", ""),
+                "content": content,
+                "metadata": _slim_metadata_for_session(t.get("metadata") or {}),
+                "created_at": t.get("created_at") or "",
+                "username": t.get("username") or st.session_state.username,
+            }
+        )
+    return normalized
 
 
 def get_conversations() -> List[Dict[str, Any]]:
     from services.chat_history_service import turns_to_conversations
 
-    return turns_to_conversations(st.session_state.chat_history or [])
+    hist = st.session_state.chat_history or []
+    cache_key = (
+        len(hist),
+        str((hist[-1] or {}).get("created_at") or "") if hist else "",
+        str((hist[0] or {}).get("created_at") or "") if hist else "",
+    )
+    if st.session_state.get("_conv_cache_key") == cache_key:
+        return list(st.session_state.get("_conv_cache") or [])
+    convs = turns_to_conversations(hist)
+    st.session_state["_conv_cache_key"] = cache_key
+    st.session_state["_conv_cache"] = convs
+    return convs
+
+
+def _hydrate_conversation(conv: Dict[str, Any]) -> Dict[str, Any]:
+    """Reload full generation payload when session only has a slim stub."""
+    meta = conv.get("result") if isinstance(conv.get("result"), dict) else {}
+    needs = bool(meta.get("_slimmed")) or bool(
+        (conv.get("metadata") or {}).get("_needs_hydrate")
+        if isinstance(conv.get("metadata"), dict)
+        else False
+    )
+    # Also hydrate if markdown stub looks truncated
+    fo = meta.get("final_output") if isinstance(meta, dict) else {}
+    content = (fo or {}).get("content") if isinstance(fo, dict) else {}
+    md = str((content or {}).get("markdown") or "")
+    if not needs and not md.endswith("…") and len(md) > 200:
+        return conv
+
+    username = (
+        str(conv.get("username") or st.session_state.get("username") or "").strip()
+    )
+    if not username:
+        return conv
+    try:
+        from services.chat_history_service import (
+            get_user_history,
+            turns_to_conversations,
+        )
+
+        full_turns = get_user_history(username, limit=200) or []
+        full_convs = turns_to_conversations(full_turns)
+        cid = str(conv.get("id") or "")
+        created = str(conv.get("created_at") or "")
+        for fc in full_convs:
+            if cid and str(fc.get("id") or "") == cid:
+                return fc
+            if created and str(fc.get("created_at") or "") == created:
+                if str(fc.get("title") or "") == str(conv.get("title") or ""):
+                    return fc
+    except Exception:
+        pass
+    return conv
 
 
 def render_beginner_guide(context: str = "general") -> None:
@@ -980,12 +1067,13 @@ def start_new_chat() -> None:
 
 
 def open_conversation(conv: Dict[str, Any]) -> None:
-    st.session_state.active_conversation = conv
+    full = _hydrate_conversation(conv or {})
+    st.session_state.active_conversation = full
     st.session_state.main_view = "history"
     # Also mirror into results so tab views stay in sync when user switches back
-    wf = str(conv.get("workflow") or "auto")
-    if conv.get("result"):
-        st.session_state.results[wf] = conv["result"]
+    wf = str(full.get("workflow") or "auto")
+    if full.get("result"):
+        st.session_state.results[wf] = full["result"]
     st.rerun()
 
 
@@ -1730,13 +1818,12 @@ def _render_approvals_panel(key_prefix: str = "top") -> None:
 
 
 def _render_team_panel(key_prefix: str = "side") -> None:
-    """Team usage monitor — lives in the left sidebar for admin."""
+    """Team usage monitor — pick one user (lazy) so the page stays fast."""
     load_error = ""
     mongo_ok = False
     try:
         from services.chat_history_service import (
             get_user_history as _admin_get_hist,
-            get_user_usage_summary,
             list_history_usernames,
             turns_to_conversations as _ttc,
         )
@@ -1752,7 +1839,6 @@ def _render_team_panel(key_prefix: str = "side") -> None:
         history_users = set()
         _ttc = None
         _admin_get_hist = None
-        get_user_usage_summary = None
         _person_label = lambda u: u  # noqa: E731
         load_error = str(exc)
 
@@ -1766,7 +1852,6 @@ def _render_team_panel(key_prefix: str = "side") -> None:
             hist_user,
             {"username": hist_user, "email": hist_user, "status": "active"},
         )
-    # Bootstrap admin lives in .env, not the users collection — still show them.
     me = str(st.session_state.get("username") or "").strip().lower()
     if me:
         by_email.setdefault(
@@ -1775,73 +1860,63 @@ def _render_team_panel(key_prefix: str = "side") -> None:
         )
 
     st.markdown("**Team**")
-    try:
-        from services.chat_history_service import ensure_history_synced
-
-        if not st.session_state.get("_history_synced_once"):
-            sync_info = ensure_history_synced()
-            st.session_state["_history_synced_once"] = True
-            st.session_state["_history_sync_info"] = sync_info
-    except Exception:
-        pass
+    # Do not run history sync on every admin sidebar render — hurts load time.
     st.caption(
-        "User store: MongoDB connected — all past chats kept for weekly reports"
+        "MongoDB connected"
         if mongo_ok
-        else "User store: local only — set MONGODB_URI for Cloud (history can be lost)"
+        else "Local only — set MONGODB_URI for Cloud"
     )
-    sync_info = st.session_state.get("_history_sync_info") or {}
-    if mongo_ok and sync_info.get("mongo_total"):
-        st.caption(f"History archive: {sync_info.get('mongo_total')} turns in MongoDB")
 
     if load_error:
-        st.caption(f"Team list failed to load: {load_error[:120]}")
+        st.caption(f"Team list failed: {load_error[:120]}")
     if not by_email:
-        st.caption(
-            "No signed-up users yet. Bootstrap admin is not stored in Users — "
-            "approve a signup, or generate a chat so history appears here."
-        )
+        st.caption("No signed-up users yet.")
         return
 
-    def _sort_key(item):
-        email, _row = item
-        try:
-            summary = get_user_usage_summary(email) if get_user_usage_summary else {}
-        except Exception:
-            summary = {}
-        return (str(summary.get("last_activity") or ""), email)
+    options = sorted(by_email.keys())
+    labels = {
+        email: f"{_person_label(email)} ({str(by_email[email].get('status') or 'active')})"
+        for email in options
+    }
+    selected = st.selectbox(
+        "View member history",
+        options=options,
+        format_func=lambda e: labels.get(e, e),
+        key=f"{key_prefix}_team_pick",
+        index=None,
+        placeholder="Choose a teammate…",
+    )
+    if not selected:
+        st.caption(f"{len(options)} members — pick one to open chats")
+        return
+    if _admin_get_hist is None or _ttc is None:
+        st.caption("History unavailable")
+        return
 
-    for email, row in sorted(by_email.items(), key=_sort_key, reverse=True):
-        status = str(row.get("status") or "approved").lower()
-        name = _person_label(email)
-        try:
-            usage = get_user_usage_summary(email) if get_user_usage_summary else {}
-        except Exception:
-            usage = {}
-        conv_n = int(usage.get("conversation_count") or 0)
-        week_n = int(usage.get("week_conversation_count") or 0)
-        with st.expander(f"{name} · {conv_n} chats · {week_n}/7d", expanded=False):
-            st.caption(f"{email} · {status}")
-            if usage.get("last_activity"):
-                st.caption(f"Last active: {usage.get('last_activity')}")
-            if _admin_get_hist is None or _ttc is None:
-                st.caption("History unavailable")
-                continue
-            turns = _admin_get_hist(email, limit=500)
-            convs = _ttc(turns)
-            if not convs:
-                st.caption("No chats yet")
-            else:
-                _render_conversation_buttons(
-                    convs,
-                    key_prefix=f"{key_prefix}_admin_{email}",
-                    limit=200,
-                )
-                if len(convs) > 200:
-                    st.caption(f"+{len(convs) - 200} older")
+    turns = _admin_get_hist(selected, limit=200)
+    convs = _ttc(turns)
+    st.caption(f"{selected} · {len(convs)} chats")
+    if not convs:
+        st.caption("No chats yet")
+        return
+    show_n = int(st.session_state.get(f"{key_prefix}_team_show", 6))
+    _render_conversation_buttons(
+        convs,
+        key_prefix=f"{key_prefix}_admin_{selected}",
+        limit=show_n,
+    )
+    if len(convs) > show_n:
+        if st.button(
+            f"Show more ({len(convs) - show_n} older)",
+            key=f"{key_prefix}_team_more",
+            use_container_width=True,
+        ):
+            st.session_state[f"{key_prefix}_team_show"] = show_n + 6
+            st.rerun()
 
 
 def _render_usage_report_panel(key_prefix: str = "top") -> None:
-    """Weekly portal usage report for admin (CSV download)."""
+    """Weekly portal usage report — generated only when admin asks (keeps load fast)."""
     with st.expander("Weekly usage report", expanded=False):
         try:
             from services.chat_history_service import (
@@ -1865,18 +1940,36 @@ def _render_usage_report_panel(key_prefix: str = "top") -> None:
                 "MongoDB is not connected. Report may miss Cloud signups. "
                 "Set MONGODB_URI in Streamlit secrets."
             )
-        rows = build_portal_usage_report(days=int(days))
+        if st.button(
+            "Generate report",
+            key=f"{key_prefix}_usage_go",
+            use_container_width=True,
+            type="primary",
+        ):
+            st.session_state[f"{key_prefix}_usage_ready"] = True
+            st.session_state[f"{key_prefix}_usage_for_days"] = int(days)
+
+        if not st.session_state.get(f"{key_prefix}_usage_ready"):
+            st.caption("Click Generate report when you need the weekly CSV.")
+            return
+
+        report_days = int(
+            st.session_state.get(f"{key_prefix}_usage_for_days") or days
+        )
+        rows = build_portal_usage_report(days=report_days)
         if not rows:
             st.caption("No usage yet")
             return
-        active = sum(1 for r in rows if int(r.get(f"turns_last_{days}d") or 0) > 0)
-        st.caption(f"{len(rows)} users · {active} active in last {days} days")
+        active = sum(
+            1 for r in rows if int(r.get(f"turns_last_{report_days}d") or 0) > 0
+        )
+        st.caption(f"{len(rows)} users · {active} active in last {report_days} days")
         st.dataframe(rows, use_container_width=True, hide_index=True)
-        csv_text = usage_report_csv(days=int(days))
+        csv_text = usage_report_csv(days=report_days)
         st.download_button(
             "Download CSV",
             data=csv_text,
-            file_name=f"portal_usage_last_{days}d.csv",
+            file_name=f"portal_usage_last_{report_days}d.csv",
             mime="text/csv",
             key=f"{key_prefix}_usage_csv",
             use_container_width=True,
@@ -1952,11 +2045,17 @@ with st.sidebar:
     if not my_conversations:
         st.caption("No chats yet")
     else:
-        _render_conversation_buttons(my_conversations, "my_hist", limit=200)
-        if len(my_conversations) > 200:
-            st.caption(f"+{len(my_conversations) - 200} older")
-        else:
-            st.caption(f"{len(my_conversations)} chats saved")
+        show_n = int(st.session_state.get("my_hist_show", 6))
+        _render_conversation_buttons(my_conversations, "my_hist", limit=show_n)
+        st.caption(f"{len(my_conversations)} chats saved")
+        if len(my_conversations) > show_n:
+            if st.button(
+                f"Show more ({len(my_conversations) - show_n} older)",
+                key="my_hist_more",
+                use_container_width=True,
+            ):
+                st.session_state["my_hist_show"] = show_n + 6
+                st.rerun()
 
     if st.session_state.is_admin:
         st.divider()
