@@ -17,20 +17,28 @@ logger = logging.getLogger(__name__)
 
 _FILE_PATH = Path(__file__).resolve().parent.parent / "data" / "chat_history.json"
 
+# Process-level guard: full file↔Mongo sync is expensive (large article payloads).
+_SYNC_DONE_ONCE = False
+_CHAT_INDEXES_READY = False
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
 def _mongo_collection():
+    global _CHAT_INDEXES_READY
     try:
         from memory.mongodb import MongoDBClient
         from pymongo import ASCENDING, DESCENDING
 
         client = MongoDBClient()
         col = client.db.user_chat_turns
-        col.create_index([("username", ASCENDING), ("created_at", ASCENDING)])
-        col.create_index([("created_at", DESCENDING)])
+        # create_index on every call adds latency to Streamlit reruns
+        if not _CHAT_INDEXES_READY:
+            col.create_index([("username", ASCENDING), ("created_at", ASCENDING)])
+            col.create_index([("created_at", DESCENDING)])
+            _CHAT_INDEXES_READY = True
         return col
     except Exception as exc:
         logger.info("Mongo chat history unavailable, using file fallback: %s", exc)
@@ -53,28 +61,41 @@ def sync_file_history_to_mongo(force: bool = False) -> int:
     """
     Push any local `data/chat_history.json` turns that are missing from Mongo.
 
-    Safe to call repeatedly — only inserts fingerprints not already present.
-    Returns number of turns inserted. Critical for Streamlit Cloud: the JSON
-    file is gitignored / ephemeral, so Mongo must hold every past test.
+    Cheap path: if Mongo already has docs and force is False, skip the full
+    fingerprint scan (page loads must stay fast). force=True runs a real merge.
     """
+    global _SYNC_DONE_ONCE
     col = _mongo_collection()
     if col is None:
         return 0
     try:
+        mongo_n = 0
+        try:
+            mongo_n = int(col.estimated_document_count())
+        except Exception:
+            mongo_n = 0
+
+        # Fast path for normal page loads — history is already durable in Mongo.
+        if not force and mongo_n > 0:
+            return 0
+        if not force and _SYNC_DONE_ONCE:
+            return 0
+
         data = _load_file()
         if not data:
+            _SYNC_DONE_ONCE = True
             return 0
 
         existing: set[str] = set()
-        try:
-            for doc in col.find(
-                {},
-                {"_id": 0, "username": 1, "created_at": 1, "role": 1, "content": 1},
-            ):
-                existing.add(_turn_fingerprint(doc))
-        except Exception as exc:
-            logger.warning("Could not read Mongo fingerprints: %s", exc)
-            if not force and col.estimated_document_count() > 0:
+        if mongo_n > 0:
+            try:
+                for doc in col.find(
+                    {},
+                    {"_id": 0, "username": 1, "created_at": 1, "role": 1, "content": 1},
+                ):
+                    existing.add(_turn_fingerprint(doc))
+            except Exception as exc:
+                logger.warning("Could not read Mongo fingerprints: %s", exc)
                 return 0
 
         to_insert: List[Dict[str, Any]] = []
@@ -83,7 +104,6 @@ def sync_file_history_to_mongo(force: bool = False) -> int:
                 if not isinstance(t, dict) or not t.get("content"):
                     continue
                 payload = dict(t)
-                # Normalise username for stable queries
                 payload["username"] = str(payload.get("username") or "").strip().lower()
                 fp = _turn_fingerprint(payload)
                 if fp in existing:
@@ -91,10 +111,10 @@ def sync_file_history_to_mongo(force: bool = False) -> int:
                 existing.add(fp)
                 to_insert.append(payload)
 
-        if not to_insert:
-            return 0
-        col.insert_many(to_insert, ordered=False)
-        logger.info("Synced %d chat history turns from file → Mongo", len(to_insert))
+        if to_insert:
+            col.insert_many(to_insert, ordered=False)
+            logger.info("Synced %d chat history turns from file → Mongo", len(to_insert))
+        _SYNC_DONE_ONCE = True
         return len(to_insert)
     except Exception as exc:
         logger.warning("chat history file→Mongo sync skipped: %s", exc)
@@ -102,59 +122,45 @@ def sync_file_history_to_mongo(force: bool = False) -> int:
 
 
 def _migrate_file_to_mongo_if_empty(col) -> None:
-    """Backward-compatible entry: always merge missing file turns into Mongo."""
-    sync_file_history_to_mongo(force=False)
+    """Seed Mongo from local file only when the collection is empty."""
+    try:
+        if col.estimated_document_count() > 0:
+            return
+    except Exception:
+        pass
+    sync_file_history_to_mongo(force=True)
 
 
 def ensure_history_synced() -> Dict[str, Any]:
     """
-    Make history durable for the Streamlit UI.
+    Make history durable for the Streamlit UI (cheap + once per process).
 
-    - Merge local file → Mongo (so Cloud / other machines keep past tests)
-    - Mirror Mongo → local file when possible (laptop backup)
+    If Mongo already has turns, skip expensive fingerprint scans on page load.
+    Full merge only runs when the collection is empty (seed from local file).
     """
-    inserted = sync_file_history_to_mongo(force=True)
-    mirrored = 0
+    global _SYNC_DONE_ONCE
     col = _mongo_collection()
-    if col is not None:
-        try:
-            data = _load_file()
-            file_fps: set[str] = set()
-            for turns in data.values():
-                for t in turns or []:
-                    if isinstance(t, dict):
-                        file_fps.add(_turn_fingerprint(t))
-
-            for doc in col.find({}, {"_id": 0}):
-                if not isinstance(doc, dict) or not doc.get("content"):
-                    continue
-                user = str(doc.get("username") or "").strip().lower()
-                if not user:
-                    continue
-                fp = _turn_fingerprint(doc)
-                if fp in file_fps:
-                    continue
-                bucket = data.setdefault(user, [])
-                bucket.append(dict(doc))
-                file_fps.add(fp)
-                mirrored += 1
-            if mirrored:
-                for user, bucket in list(data.items()):
-                    if len(bucket) > 500:
-                        data[user] = bucket[-500:]
-                _save_file(data)
-                logger.info("Mirrored %d Mongo turns → local chat_history.json", mirrored)
-        except Exception as exc:
-            logger.warning("Mongo→file mirror skipped: %s", exc)
-
     total = 0
     if col is not None:
         try:
-            total = int(col.count_documents({}))
+            total = int(col.estimated_document_count())
         except Exception:
             total = 0
-    return {"inserted_to_mongo": inserted, "mirrored_to_file": mirrored, "mongo_total": total}
 
+    if _SYNC_DONE_ONCE:
+        return {"inserted_to_mongo": 0, "mirrored_to_file": 0, "mongo_total": total}
+
+    # Seed only when Mongo is empty — otherwise history is already durable.
+    inserted = 0
+    if total == 0:
+        inserted = sync_file_history_to_mongo(force=True)
+        if col is not None:
+            try:
+                total = int(col.estimated_document_count())
+            except Exception:
+                pass
+    _SYNC_DONE_ONCE = True
+    return {"inserted_to_mongo": inserted, "mirrored_to_file": 0, "mongo_total": total}
 
 def _load_file() -> Dict[str, List[Dict[str, Any]]]:
     if not _FILE_PATH.exists():
@@ -245,8 +251,8 @@ def get_user_history(username: str, limit: int = 500) -> List[Dict[str, Any]]:
 
     col = _mongo_collection()
     if col is not None:
-        # Keep Mongo complete so Streamlit Cloud never loses laptop test history
-        sync_file_history_to_mongo(force=False)
+        # Only seed when empty — never full-scan on every history read
+        _migrate_file_to_mongo_if_empty(col)
         try:
             cursor = (
                 col.find({"username": {"$in": aliases}}, {"_id": 0})
