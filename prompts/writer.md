@@ -326,7 +326,10 @@ FORMAT REQUIREMENTS:
 - Address the reader with "you" / light "we", but NEVER use contractions or apostrophe shortcuts.
   Write "you are", "it is", "I would", "do not", "we have", "cannot" — not you're / it's / I'd / don't / we've / can't.
   Prefer "of the family" / "the child needs" over "family's" / "child's" when natural.
-- Open sections with a concrete scene, question, number, or claim — not a definition or "X is important".
+- In the first 1–2 paragraphs, give a crisp searcher definition (what it is / how it differs), then scene or proof — never "X is important" or a brochure dictionary dump. Later sections open with a scene, question, number, or claim.
+- Never paraphrase statistics until claim, sample, year, and context are verified in the evidence ledger; attribute with source + year.
+- Soften absolute SEO claims (#1, guaranteed, best in market) unless ledger-backed and scoped.
+- Outline/body should answer the searcher's real questions (definition, choice criteria, risks, what most articles miss), not only place the keyword.
 - Demonstrate, do not only explain (9+ rule):
   Whenever you make an abstract claim, ask: "Can I show the reader what this looks like in a real business?"
   If yes, replace the explanation with a short demonstration — a workflow moment, decision trade-off,
