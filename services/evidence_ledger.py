@@ -6,14 +6,15 @@ Research → structured claim pack → Writer may only use these facts.
 Sources footer prefers ledger URLs. Review fails unsupported numbers.
 
 Each entry:
-  id | kind | statement | figure | year | geography | source_title | url | confidence
+  id | kind | claim | statement | figure | sample | year | geography |
+  context | source_title | url | confidence
 """
 
 from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, Iterable, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,19 @@ _YEAR_RE = re.compile(r"\b(20[12]\d)\b")
 _TOOL_LABEL = re.compile(
     r"\b(tavily|duckduckgo|newsapi|research summary|web search)\b",
     re.I,
+)
+_SAMPLE_RE = re.compile(
+    r"(?i)\b("
+    r"(?:n\s*=\s*\d[\d,]*)|"
+    r"(?:sample\s+(?:of\s+)?\d[\d,]*)|"
+    r"(?:\d[\d,]*\s+(?:respondents?|adults?|parents?|families|households|"
+    r"companies|SMBs?|workers?|employees?|nannies|caregivers?|surveyed))"
+    r")\b"
+)
+_CONTEXT_CUES = re.compile(
+    r"(?i)\b(survey|study|report|poll|census|among|of\s+(?:indian|uk|us|nri)|"
+    r"in\s+(?:india|delhi|gurgaon|london|202[0-9])|"
+    r"according to|as per|findings? from)\b"
 )
 
 
@@ -70,6 +84,51 @@ def _guess_geo(text: str) -> str:
         if re.search(r"(?<!\w)" + re.escape(needle) + r"(?!\w)", t):
             return label
     return ""
+
+
+def _extract_sample(text: str) -> str:
+    m = _SAMPLE_RE.search(text or "")
+    return (m.group(0).strip() if m else "")[:120]
+
+
+def _extract_context(text: str) -> str:
+    """Short claim context window around the first figure / cue."""
+    raw = re.sub(r"\s+", " ", (text or "").strip())
+    if not raw:
+        return ""
+    # Prefer sentence containing the figure
+    figs = list(_FIGURE_RE.finditer(raw))
+    if figs:
+        pos = figs[0].start()
+        start = max(0, raw.rfind(".", 0, pos) + 1)
+        end = raw.find(".", pos)
+        if end < 0:
+            end = min(len(raw), pos + 160)
+        else:
+            end = min(len(raw), end + 1)
+        window = raw[start:end].strip()
+        if len(window) >= 24:
+            return window[:220]
+    if _CONTEXT_CUES.search(raw):
+        return raw[:220]
+    return raw[:180]
+
+
+def _extract_claim(text: str) -> str:
+    """Claim = statement without trailing (Source: …) attribution."""
+    stmt = re.sub(r"\s+", " ", (text or "").strip())
+    stmt = re.sub(r"\s*\(Source:\s*[^)]+\)\s*$", "", stmt, flags=re.I).strip()
+    return stmt[:280]
+
+
+def _stat_is_attributable(entry: Dict[str, Any]) -> bool:
+    """Statistic must have year and/or a named source — orphan numbers are dropped."""
+    if (entry.get("kind") or "") != "statistic":
+        return True
+    has_year = bool(str(entry.get("year") or "").strip())
+    has_src = bool(str(entry.get("source_title") or "").strip())
+    has_url = bool(str(entry.get("url") or "").strip())
+    return has_year or has_src or has_url
 
 
 def build_evidence_ledger(
@@ -163,16 +222,30 @@ def build_evidence_ledger(
 
         figs = list(_figures_in(stmt))
         years = _years_in(stmt)
+        claim = _extract_claim(stmt)
+        sample = _extract_sample(stmt)
+        context = _extract_context(stmt)
+        # Prefer source-attributed stats; demote orphan figures later
+        if kind == "statistic":
+            if years and st:
+                confidence = max(float(confidence), 0.85)
+            elif years or st or url:
+                confidence = max(float(confidence), 0.7)
+            else:
+                confidence = min(float(confidence), 0.45)
         eid = f"E{len(entries) + 1}"
         entries.append(
             {
                 "id": eid,
                 "kind": kind,
+                "claim": claim,
                 "statement": stmt[:500],
                 "figure": figs[0] if figs else "",
                 "figures": figs[:4],
+                "sample": sample,
                 "year": years[0] if years else "",
                 "geography": _guess_geo(stmt),
+                "context": context,
                 "source_title": st[:200],
                 "url": url[:500],
                 "confidence": round(float(confidence), 2),
@@ -216,11 +289,30 @@ def build_evidence_ledger(
             confidence=0.5,
         )
 
-    # Prefer entries with URLs / figures
+    # Drop orphan statistics (no year, source, or URL) when better options exist
+    attributed_stats = [
+        e for e in entries
+        if e.get("kind") != "statistic" or _stat_is_attributable(e)
+    ]
+    if sum(1 for e in attributed_stats if e.get("kind") == "statistic") >= 1:
+        entries = attributed_stats
+    else:
+        # Keep weak stats only if nothing better — still prefer figures with any cue
+        entries = [
+            e for e in entries
+            if e.get("kind") != "statistic"
+            or e.get("figure")
+            or e.get("source_title")
+        ]
+
+    # Prefer year + source + URL + figure
     entries.sort(
         key=lambda e: (
+            1 if e.get("year") else 0,
+            1 if e.get("source_title") else 0,
             1 if e.get("url") else 0,
             1 if e.get("figure") else 0,
+            1 if e.get("sample") else 0,
             float(e.get("confidence") or 0),
         ),
         reverse=True,
@@ -233,10 +325,11 @@ def build_evidence_ledger(
         out.append(e)
 
     logger.info(
-        "Evidence ledger built | entries=%d | with_url=%d | with_figure=%d",
+        "Evidence ledger built | entries=%d | with_url=%d | with_figure=%d | with_year=%d",
         len(out),
         sum(1 for e in out if e.get("url")),
         sum(1 for e in out if e.get("figure")),
+        sum(1 for e in out if e.get("year")),
     )
     return out
 
@@ -254,18 +347,26 @@ def format_ledger_for_writer(ledger: Optional[List[Dict[str, Any]]]) -> str:
         )
     lines = [
         "EVIDENCE LEDGER (ONLY authorised facts — every number/case in the draft "
-        "must come from an entry below; cite source_title + year when present):",
+        "must come from an entry below):",
+        "ATTRIBUTION TEMPLATE when using a statistic:",
+        '  According to {source_title} ({year}), {claim} — {sample/context if present}.',
+        "Never paraphrase a figure without keeping claim, year, and source. "
+        "Do not invent sample size or year if the ledger leaves them blank.",
     ]
     for e in rows:
         fig = e.get("figure") or "—"
         year = e.get("year") or "—"
         geo = e.get("geography") or "—"
         src = e.get("source_title") or "unspecified source"
+        sample = e.get("sample") or "—"
         kind = e.get("kind") or "fact"
-        stmt = e.get("statement") or ""
+        claim = e.get("claim") or e.get("statement") or ""
+        context = e.get("context") or ""
         lines.append(
-            f"- [{e.get('id')}] ({kind}) figure={fig} | year={year} | geo={geo} | "
-            f"source={src}\n  {stmt}"
+            f"- [{e.get('id')}] ({kind}) figure={fig} | year={year} | sample={sample} | "
+            f"geo={geo} | source={src}\n"
+            f"  claim: {claim}\n"
+            f"  context: {context or claim}"
         )
     lines.append(
         "Rules: If a figure you want is not in this ledger, omit it. "
@@ -467,6 +568,107 @@ def claim_audit_issues(
                 "under investigation language — do not state unresolved cases as proven fact."
             )
 
+    issues.extend(stat_fidelity_issues(body, ledger))
+    return issues
+
+
+def stat_fidelity_issues(
+    draft: str,
+    ledger: Optional[List[Dict[str, Any]]] = None,
+) -> List[str]:
+    """
+    Flag paraphrased stats that drop year / source / sample when the ledger had them.
+
+    For each draft figure that matches a ledger entry, require nearby attribution
+    to retain year and source_title when those fields were present on the entry.
+    """
+    issues: List[str] = []
+    body = draft or ""
+    if not body.strip() or not ledger:
+        return issues
+
+    # Build figure → best ledger entry
+    by_fig: Dict[str, Dict[str, Any]] = {}
+    for e in ledger:
+        if (e.get("kind") or "") not in ("statistic", "incident", ""):
+            continue
+        figs = list(e.get("figures") or [])
+        if e.get("figure"):
+            figs = [str(e["figure"])] + figs
+        for f in figs:
+            key = re.sub(r"[,\s]", "", _norm_figure(str(f)))
+            if key and key not in by_fig:
+                by_fig[key] = e
+
+    if not by_fig:
+        return issues
+
+    missing_year = 0
+    missing_source = 0
+    missing_sample = 0
+    checked = 0
+
+    for m in _FIGURE_RE.finditer(body):
+        fig = m.group(0)
+        digits = re.sub(r"\D", "", fig)
+        if digits.isdigit() and int(digits) <= 12 and "%" not in fig:
+            continue
+        key = re.sub(r"[,\s]", "", _norm_figure(fig))
+        entry = by_fig.get(key)
+        if not entry:
+            continue
+        checked += 1
+        # Window around the figure (±180 chars)
+        start = max(0, m.start() - 180)
+        end = min(len(body), m.end() + 180)
+        window = body[start:end]
+        year = str(entry.get("year") or "").strip()
+        src = str(entry.get("source_title") or "").strip()
+        sample = str(entry.get("sample") or "").strip()
+
+        if year and year not in window:
+            # Also accept "according to …" + any 20xx nearby as soft year
+            if not _YEAR_RE.search(window):
+                missing_year += 1
+        if src:
+            # Source match: significant token from title, or "according to"/"as per"
+            src_toks = [
+                t for t in re.findall(r"[A-Za-z]{4,}", src.lower())
+                if t not in {"report", "study", "survey", "news", "article", "the"}
+            ][:4]
+            has_attr = bool(
+                re.search(r"(?i)\b(according to|as per|reports? that)\b", window)
+            )
+            has_src = any(t in window.lower() for t in src_toks) if src_toks else has_attr
+            if not has_src and not has_attr:
+                missing_source += 1
+        if sample:
+            # If ledger had a sample size, prefer keeping a number+respondents cue
+            sample_digits = re.sub(r"\D", "", sample)
+            if sample_digits and sample_digits not in re.sub(r"\D", "", window):
+                if not re.search(
+                    r"(?i)\b(respondents?|surveyed|sample|households|parents)\b",
+                    window,
+                ):
+                    missing_sample += 1
+
+    if checked == 0:
+        return issues
+    if missing_year >= 1:
+        issues.append(
+            "STAT_FIDELITY_YEAR: A ledger-backed statistic is missing its year in the "
+            "nearby sentence. Keep the year when paraphrasing (e.g. 'According to X (2024)…')."
+        )
+    if missing_source >= 1:
+        issues.append(
+            "STAT_FIDELITY_SOURCE: A ledger-backed statistic is missing its source name "
+            "nearby. Attribute the publisher/report when paraphrasing — do not orphan the figure."
+        )
+    if missing_sample >= 2:
+        issues.append(
+            "STAT_FIDELITY_SAMPLE: Sample/cohort context from the ledger was dropped. "
+            "Preserve sample size or cohort when the source provided it."
+        )
     return issues
 
 
