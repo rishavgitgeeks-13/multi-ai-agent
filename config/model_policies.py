@@ -38,6 +38,8 @@ MODE_POLICIES: Dict[str, Dict[str, Any]] = {
         "cta_style": "once_soft_or_brand_close",
         "hard_cta": False,
         "demonstrate_style": "family",
+        "require_early_definition": False,
+        "absolute_claims_strict": True,
         "review_weights": {
             **_BASE_WEIGHTS,
             "seo_compliance": 0.12,
@@ -47,7 +49,7 @@ MODE_POLICIES: Dict[str, Dict[str, Any]] = {
             "AWARENESS MODE: H1 and early body use topic keywords only. "
             "Introduce the brand/product name once in the final third near the CTA. "
             "Demonstrate with real family/reader scenes (hand-off, backup, sick day), "
-            "not brochure definitions."
+            "not brochure definitions. Soften absolute SEO/market claims."
         ),
     },
     "authority": {
@@ -61,6 +63,8 @@ MODE_POLICIES: Dict[str, Dict[str, Any]] = {
         "cta_style": "once_soft",
         "hard_cta": False,
         "demonstrate_style": "case_research",
+        "require_early_definition": True,
+        "absolute_claims_strict": True,
         "review_weights": {
             **_BASE_WEIGHTS,
             "factual_grounding": 0.18,
@@ -68,8 +72,9 @@ MODE_POLICIES: Dict[str, Dict[str, Any]] = {
             "natural_voice": 0.16,
         },
         "writer_notes": (
-            "AUTHORITY MODE: Lead with topic proof and attributed research. "
-            "Brand mentions stay light. Prefer case/research demonstrations."
+            "AUTHORITY MODE: Lead with a crisp searcher definition, then topic proof "
+            "and attributed research. Brand mentions stay light. Prefer case/research "
+            "demonstrations. Soften unsourced absolute claims."
         ),
     },
     "lead_gen": {
@@ -83,6 +88,8 @@ MODE_POLICIES: Dict[str, Dict[str, Any]] = {
         "cta_style": "once_hard",
         "hard_cta": True,
         "demonstrate_style": "business",
+        "require_early_definition": False,
+        "absolute_claims_strict": False,
         "review_weights": {
             **_BASE_WEIGHTS,
             "cta_effectiveness": 0.08,
@@ -92,7 +99,8 @@ MODE_POLICIES: Dict[str, Dict[str, Any]] = {
         },
         "writer_notes": (
             "LEAD-GEN MODE: Commercial clarity OK. One hard brand CTA at the close. "
-            "Demonstrate with business outcomes (workflow, cost/time, missed deal)."
+            "Demonstrate with business outcomes (workflow, cost/time, missed deal). "
+            "Sharper claims OK only when ledger-backed or clearly scoped."
         ),
     },
     "seo_page": {
@@ -106,6 +114,8 @@ MODE_POLICIES: Dict[str, Dict[str, Any]] = {
         "cta_style": "intent_matched_once",
         "hard_cta": False,
         "demonstrate_style": "practical_steps",
+        "require_early_definition": True,
+        "absolute_claims_strict": True,
         "review_weights": {
             **_BASE_WEIGHTS,
             "seo_compliance": 0.18,
@@ -114,11 +124,12 @@ MODE_POLICIES: Dict[str, Dict[str, Any]] = {
         },
         "writer_notes": (
             "SEO PAGE MODE: Topic keyword in H1 when natural. Brand is secondary. "
-            "Demonstrate with practical steps the searcher can use."
+            "Within the first 1–2 paragraphs, give a crisp searcher definition "
+            "(what X is / how it differs) — not 'X is important'. Then practical steps. "
+            "Soften absolute SEO/market claims unless sourced and scoped."
         ),
     },
 }
-
 
 def get_policy(mode: str) -> Dict[str, Any]:
     """Return a deep copy of the policy pack for a mode (fallback: seo_page)."""
